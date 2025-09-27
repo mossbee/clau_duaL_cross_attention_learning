@@ -1,0 +1,6 @@
+*.pyc
+CUB_200_2011.md
+dual_cross_attention_learning.md
+VeRi_776.md
+vit_rollout.py
+ViT-pytorch/
