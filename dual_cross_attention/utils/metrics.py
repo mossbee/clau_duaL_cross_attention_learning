@@ -16,8 +16,12 @@ Re-ID Metrics:
 import torch
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-import sklearn.metrics
 from collections import defaultdict
+
+try:
+    import sklearn.metrics
+except ImportError:
+    sklearn = None
 
 
 class FGVCMetrics:
@@ -155,7 +159,14 @@ class FGVCMetrics:
         all_preds = torch.cat(self.all_predictions).argmax(dim=1).numpy()
         all_targets = torch.cat(self.all_targets).numpy()
         
-        return sklearn.metrics.confusion_matrix(all_targets, all_preds, labels=range(self.num_classes))
+        if sklearn is not None:
+            return sklearn.metrics.confusion_matrix(all_targets, all_preds, labels=range(self.num_classes))
+        else:
+            # Simple manual confusion matrix implementation
+            cm = np.zeros((self.num_classes, self.num_classes), dtype=int)
+            for true, pred in zip(all_targets, all_preds):
+                cm[true, pred] += 1
+            return cm
     
     def reset(self):
         """Reset all accumulated metrics"""

@@ -19,10 +19,21 @@ import seaborn as sns
 from PIL import Image
 import os
 from typing import Dict, List, Tuple, Optional, Union
-import plotly.graph_objects as go
-import plotly.express as px
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
+
+# Optional imports with fallbacks
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+
+try:
+    from sklearn.manifold import TSNE
+    from sklearn.decomposition import PCA
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
 
 
 class AttentionVisualizer:
