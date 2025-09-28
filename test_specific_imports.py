@@ -78,6 +78,9 @@ def test_train_script_imports():
         )
         from dual_cross_attention.configs import FGVCConfig, ReIDConfig
         
+        # Latest failing import - line 43
+        from dual_cross_attention.configs import get_fgvc_config, get_reid_config
+        
         print("✅ All train.py imports successful!")
         return True
         
