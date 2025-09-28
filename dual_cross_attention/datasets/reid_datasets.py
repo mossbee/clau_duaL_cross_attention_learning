@@ -255,7 +255,17 @@ class ReIDDataLoader:
     def __init__(self, dataset_name: str, root_dirs: Dict[str, str],
                  batch_size: int = 64, images_per_id: int = 4,
                  num_workers: int = 4, pin_memory: bool = True):
-        pass
+        self.dataset_name = dataset_name
+        self.root_dirs = root_dirs
+        self.batch_size = batch_size
+        self.images_per_id = images_per_id
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        
+        # Import transforms here to avoid circular import
+        from .transforms import get_transform_factory
+        self.train_transform = get_transform_factory("reid", dataset_name, is_training=True)
+        self.test_transform = get_transform_factory("reid", dataset_name, is_training=False)
     
     def create_data_loaders(self) -> Tuple[DataLoader, DataLoader, DataLoader, int, int]:
         """
@@ -271,7 +281,75 @@ class ReIDDataLoader:
             num_identities: Total number of identities
             num_cameras: Number of cameras
         """
-        pass
+        # For now, create simple placeholder loaders
+        # In a full implementation, this would create proper train/query/gallery splits
+        
+        if self.dataset_name == "market1501":
+            train_dataset = Market1501Dataset(
+                root_dir=self.root_dirs["market1501"],
+                split="train",
+                transform=self.train_transform
+            )
+            query_dataset = Market1501Dataset(
+                root_dir=self.root_dirs["market1501"], 
+                split="query",
+                transform=self.test_transform
+            )
+            gallery_dataset = Market1501Dataset(
+                root_dir=self.root_dirs["market1501"],
+                split="gallery", 
+                transform=self.test_transform
+            )
+            num_identities = 1501
+            num_cameras = 6
+        else:
+            raise ValueError(f"Dataset {self.dataset_name} not implemented yet")
+        
+        # Create simple data loaders (not optimized for Re-ID)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            collate_fn=self._collate_fn
+        )
+        
+        query_loader = DataLoader(
+            query_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            collate_fn=self._collate_fn
+        )
+        
+        gallery_loader = DataLoader(
+            gallery_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            collate_fn=self._collate_fn
+        )
+        
+        return train_loader, query_loader, gallery_loader, num_identities, num_cameras
+    
+    def _collate_fn(self, batch):
+        """Custom collate function to handle metadata"""
+        images, labels, image_ids, metadata = zip(*batch)
+        
+        # Stack images and labels
+        images = torch.stack(images)
+        labels = torch.tensor(labels)
+        image_ids = torch.tensor(image_ids)
+        
+        return {
+            'images': images,
+            'labels': labels,
+            'image_ids': image_ids, 
+            'metadata': metadata
+        }
     
     def create_identity_batch_sampler(self, dataset: Dataset) -> object:
         """

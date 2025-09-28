@@ -6,13 +6,13 @@ and object re-identification datasets with appropriate preprocessing
 and augmentation strategies.
 """
 
-from .fgvc_datasets import CUBDataset, StanfordCarsDataset, FGVCAircraftDataset
-from .reid_datasets import Market1501Dataset, DukeMTMCDataset, MSMT17Dataset, VeRi776Dataset
-from .transforms import FGVCTransforms, ReIDTransforms
+from .fgvc_datasets import CUBDataset, FGVCDataLoader, PairBatchSampler
+from .reid_datasets import Market1501Dataset, ReIDDataLoader
+from .transforms import FGVCTransforms, ReIDTransforms, get_transform_factory
 
 __all__ = [
-    'CUBDataset', 'StanfordCarsDataset', 'FGVCAircraftDataset',
-    'Market1501Dataset', 'DukeMTMCDataset', 'MSMT17Dataset', 'VeRi776Dataset',
-    'FGVCTransforms', 'ReIDTransforms'
+    'CUBDataset', 'FGVCDataLoader', 'PairBatchSampler',
+    'Market1501Dataset', 'ReIDDataLoader',
+    'FGVCTransforms', 'ReIDTransforms', 'get_transform_factory'
 ]
 
