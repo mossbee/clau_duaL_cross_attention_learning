@@ -204,7 +204,8 @@ class GlobalLocalCrossAttention(nn.Module):
         
         # Place local attention results back to their positions
         batch_indices = torch.arange(B).unsqueeze(1).expand(-1, num_selected)
-        output[batch_indices, selected_indices] = out
+        # Ensure dtype compatibility for mixed precision training
+        output[batch_indices, selected_indices] = out.to(output.dtype)
         
         # Keep non-selected patches unchanged
         mask = torch.ones(N, dtype=torch.bool, device=x.device)

@@ -108,8 +108,14 @@ class DualCrossAttentionTrainer:
         
         # Enable mixed precision if specified
         if hasattr(self.config, 'mixed_precision') and self.config.mixed_precision:
-            from torch.cuda.amp import GradScaler
-            self.scaler = GradScaler()
+            try:
+                # Use new API if available (PyTorch 2.1+)
+                from torch.amp import GradScaler
+                self.scaler = GradScaler('cuda')
+            except ImportError:
+                # Fallback to old API
+                from torch.cuda.amp import GradScaler
+                self.scaler = GradScaler()
         else:
             self.scaler = None
         
@@ -260,7 +266,19 @@ class DualCrossAttentionTrainer:
             optimizer.zero_grad()
             
             # Forward pass with mixed precision if enabled
-            with torch.cuda.amp.autocast() if self.scaler else torch.no_grad():
+            if self.scaler:
+                try:
+                    # Use new API if available (PyTorch 2.1+)
+                    from torch.amp import autocast
+                    context = autocast('cuda')
+                except ImportError:
+                    # Fallback to old API
+                    from torch.cuda.amp import autocast
+                    context = autocast()
+            else:
+                context = torch.no_grad()
+            
+            with context:
                 outputs = model(images, paired_images)
                 
                 # Compute loss
