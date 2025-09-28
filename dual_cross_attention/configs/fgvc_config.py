@@ -52,7 +52,7 @@ class FGVCConfig:
     share_pwca_weights: bool = True  # PWCA shares weights with SA
     
     # Training hyperparameters (from paper)
-    batch_size: int = 16
+    batch_size: int = 8
     num_epochs: int = 100
     learning_rate: float = 5e-4  # Will be scaled: lr * batch_size / 512
     weight_decay: float = 0.05
