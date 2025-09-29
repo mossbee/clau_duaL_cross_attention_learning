@@ -231,14 +231,15 @@ class DualCrossAttentionTrainer:
                    criterion: nn.Module, optimizer: optim.Optimizer,
                    epoch: int) -> Dict[str, float]:
         """
-        Train one epoch with dual cross-attention.
+        Train one epoch with dual cross-attention and gradient accumulation.
         
-        Implements the complete training loop:
+        Implements the complete training loop with gradient accumulation:
         1. Forward pass through SA, GLCA, and PWCA branches
         2. Compute individual losses for each branch
         3. Apply uncertainty-based loss weighting
-        4. Update model parameters
-        5. Log training metrics
+        4. Accumulate gradients over multiple mini-batches
+        5. Update model parameters after accumulation steps
+        6. Log training metrics
         
         Args:
             model: Model to train
@@ -253,6 +254,9 @@ class DualCrossAttentionTrainer:
         model.train()
         self.metrics_tracker.reset()
         
+        # Gradient accumulation settings
+        accumulation_steps = getattr(self.config, 'gradient_accumulation_steps', 1)
+        
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
         
         for batch_idx, batch in enumerate(pbar):
@@ -263,7 +267,9 @@ class DualCrossAttentionTrainer:
             # Create pairs for PWCA (shuffle batch for pairing)
             paired_images = images[torch.randperm(images.size(0))]
             
-            optimizer.zero_grad()
+            # Only zero gradients at the start of accumulation
+            if batch_idx % accumulation_steps == 0:
+                optimizer.zero_grad()
             
             # Forward pass with mixed precision if enabled
             if self.scaler:
@@ -284,30 +290,41 @@ class DualCrossAttentionTrainer:
                 # Compute loss
                 targets = {"labels": labels}
                 total_loss, loss_dict, metrics_dict = criterion(outputs, targets)
+                
+                # Scale loss by accumulation steps to get the average
+                total_loss = total_loss / accumulation_steps
             
             # Backward pass
             if self.scaler:
                 self.scaler.scale(total_loss).backward()
-                self.scaler.step(optimizer)
-                self.scaler.update()
             else:
                 total_loss.backward()
-                optimizer.step()
             
-            # Update metrics
+            # Update metrics (scale loss back for logging)
             batch_size = images.size(0)
+            scaled_loss_dict = {k: v / accumulation_steps for k, v in loss_dict.items()}
             self.metrics_tracker.update(
-                {**loss_dict, **metrics_dict}, 
+                {**scaled_loss_dict, **metrics_dict}, 
                 batch_size
             )
+            
+            # Optimizer step after accumulating gradients
+            if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
+                if self.scaler:
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
+                else:
+                    optimizer.step()
             
             # Update progress bar
             if batch_idx % self.config.log_frequency == 0:
                 current_metrics = self.metrics_tracker.get_current_metrics()
+                effective_batch_size = images.size(0) * accumulation_steps
                 pbar.set_postfix({
                     'loss': f"{current_metrics['total_loss']:.4f}",
                     'sa_acc': f"{current_metrics.get('sa_acc', 0):.3f}",
-                    'glca_acc': f"{current_metrics.get('glca_acc', 0):.3f}"
+                    'glca_acc': f"{current_metrics.get('glca_acc', 0):.3f}",
+                    'eff_bs': effective_batch_size
                 })
         
         return self.metrics_tracker.get_current_metrics()
@@ -449,9 +466,16 @@ class DualCrossAttentionTrainer:
         criterion = self.setup_criterion()
         optimizer, scheduler = self.setup_optimizer(model)
         
+        # Print training configuration
+        accumulation_steps = getattr(self.config, 'gradient_accumulation_steps', 1)
+        effective_batch_size = self.config.batch_size * accumulation_steps
+        
         print(f"Starting training for {self.config.num_epochs} epochs")
         print(f"Training samples: {len(train_loader.dataset)}")
         print(f"Validation samples: {len(val_loader.dataset)}")
+        print(f"Physical batch size: {self.config.batch_size}")
+        print(f"Gradient accumulation steps: {accumulation_steps}")
+        print(f"Effective batch size: {effective_batch_size}")
         
         for epoch in range(1, self.config.num_epochs + 1):
             # Training phase

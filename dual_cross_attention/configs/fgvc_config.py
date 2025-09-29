@@ -52,9 +52,13 @@ class FGVCConfig:
     share_pwca_weights: bool = True  # PWCA shares weights with SA
     
     # Training hyperparameters (from paper)
-    batch_size: int = 4
+    batch_size: int = 8  # Physical batch size due to memory constraints
+    effective_batch_size: int = 16  # Target effective batch size from paper
+    gradient_accumulation_steps: int = 2  # Will give effective batch size of 18 (6*3)
+    # NOTE: For exact batch size 16, use batch_size=8 with gradient_accumulation_steps=2
+    # or batch_size=4 with gradient_accumulation_steps=4
     num_epochs: int = 100
-    learning_rate: float = 5e-4  # Will be scaled: lr * batch_size / 512
+    learning_rate: float = 5e-4  # Will be scaled: lr * effective_batch_size / 512
     weight_decay: float = 0.05
     optimizer: str = "adam"
     lr_scheduler: str = "cosine"
@@ -90,8 +94,8 @@ class FGVCConfig:
     
     def __post_init__(self):
         """Post-initialization processing"""
-        # Scale learning rate based on batch size as in paper
-        self.scaled_lr = self.learning_rate * self.batch_size / 512
+        # Scale learning rate based on effective batch size as in paper
+        self.scaled_lr = self.learning_rate * self.effective_batch_size / 512
         
         # Calculate sequence length for patch embeddings
         h_patches = self.input_size[0] // self.patch_size
