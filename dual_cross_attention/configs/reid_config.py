@@ -100,6 +100,14 @@ class ReIDConfig:
     log_frequency: int = 100
     checkpoint_dir: str = "./checkpoints"
     log_dir: str = "./logs"
+
+    # Debug and wandb settings
+    debug: bool = False
+    use_wandb: bool = False
+    wandb_project: str = "dual-cross-attention-reid"
+    wandb_entity: Optional[str] = None
+    experiment_name: Optional[str] = None
+    wandb_tags: List[str] = None
     
     def __post_init__(self):
         """Post-initialization processing"""
