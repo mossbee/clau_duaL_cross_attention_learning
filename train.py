@@ -374,6 +374,22 @@ class DualCrossAttentionTrainer:
                     'glca_acc': f"{current_metrics.get('glca_acc', 0):.3f}",
                     'eff_bs': effective_batch_size
                 })
+            # Add uncertainty weights to wandb every log_frequency steps
+            if batch_idx % self.config.log_frequency == 0 and self.wandb_project:
+                import wandb
+                current_metrics = self.metrics_tracker.get_current_metrics()
+                wandb.log({
+                    "step": epoch * len(train_loader) + batch_idx,
+                    "uncertainty/w1": current_metrics.get('w1', 0),
+                    "uncertainty/w2": current_metrics.get('w2', 0),
+                    "uncertainty/w3": current_metrics.get('w3', 0),
+                    "uncertainty/weight_sa": current_metrics.get('weight_sa', 0),
+                    "uncertainty/weight_glca": current_metrics.get('weight_glca', 0),
+                    "uncertainty/weight_pwca": current_metrics.get('weight_pwca', 0),
+                    "losses/sa_loss": current_metrics.get('sa_loss', 0),
+                    "losses/glca_loss": current_metrics.get('glca_loss', 0),
+                    "losses/pwca_loss": current_metrics.get('pwca_loss', 0)
+                })
         
         return self.metrics_tracker.get_current_metrics()
     
@@ -624,7 +640,18 @@ class DualCrossAttentionTrainer:
                         "epoch": epoch,
                         "learning_rate": scheduler.get_last_lr()[0],
                         **{f"train/{k}": v for k, v in train_metrics.items()},
-                        **{f"val/{k}": v for k, v in val_metrics.items()}
+                        **{f"val/{k}": v for k, v in val_metrics.items()},
+                        # Add uncertainty weights monitoring
+                        "uncertainty/w1": train_metrics.get('w1', 0),
+                        "uncertainty/w2": train_metrics.get('w2', 0), 
+                        "uncertainty/w3": train_metrics.get('w3', 0),
+                        "uncertainty/weight_sa": train_metrics.get('weight_sa', 0),
+                        "uncertainty/weight_glca": train_metrics.get('weight_glca', 0),
+                        "uncertainty/weight_pwca": train_metrics.get('weight_pwca', 0),
+                        # Add individual loss components
+                        "losses/sa_loss": train_metrics.get('sa_loss', 0),
+                        "losses/glca_loss": train_metrics.get('glca_loss', 0),
+                        "losses/pwca_loss": train_metrics.get('pwca_loss', 0)
                     })
                 
                 # Save checkpoint
