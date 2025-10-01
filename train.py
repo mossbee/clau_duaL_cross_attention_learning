@@ -598,6 +598,7 @@ class DualCrossAttentionTrainer:
             
             # Update learning rate
             scheduler.step()
+            print(f"Current LR: {scheduler.get_last_lr()[0]:.6f}")
             
             # Evaluation phase
             if epoch % self.config.eval_frequency == 0 or epoch == self.config.num_epochs:
