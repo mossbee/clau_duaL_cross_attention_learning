@@ -23,6 +23,7 @@ import argparse
 import logging
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import wandb
@@ -99,9 +100,35 @@ class DualCrossAttentionTrainer:
         """
         model = DualCrossAttentionViT(**self.config.get_model_config())
         
-        # Load pretrained weights if specified
-        if self.config.pretrained_model:
-            model.load_pretrained_vit(self.config.pretrained_model)
+        # Load pretrained weights if specified or discover common defaults
+        pretrained_path = getattr(self.config, 'pretrained_model', None)
+        if not pretrained_path:
+            # Try common default locations for ViT-B_16 ImageNet-21k .npz
+            candidate_paths = [
+                os.path.join(os.getcwd(), 'pretrained', 'ViT-B_16.npz'),
+                os.path.join(os.getcwd(), 'ViT-B_16.npz'),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pretrained', 'ViT-B_16.npz'),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ViT-B_16.npz'),
+                # If user kept a copy in the reference folder, allow picking it up (will be removed later)
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ViT-pytorch', 'checkpoint', 'ViT-B_16.npz')
+            ]
+            for cpath in candidate_paths:
+                if os.path.isfile(cpath):
+                    pretrained_path = cpath
+                    print(f"Auto-detected pretrained ViT weights at: {pretrained_path}")
+                    break
+            if not pretrained_path:
+                msg = "No pretrained ViT checkpoint provided. Pass --pretrained or set config.pretrained_model to use ImageNet-21k weights."
+                if getattr(self.config, 'require_pretrained', False):
+                    raise FileNotFoundError(msg)
+                else:
+                    print(msg)
+        
+        if pretrained_path:
+            try:
+                model.load_pretrained_vit(pretrained_path)
+            except Exception as e:
+                print(f"Warning: failed to load pretrained weights from {pretrained_path}: {e}")
         
         # Move to device
         model = model.to(self.device)
@@ -143,7 +170,8 @@ class DualCrossAttentionTrainer:
                 root_dirs={self.config.dataset_name: self.config.data_root},
                 batch_size=self.config.batch_size,
                 num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory
+                pin_memory=self.config.pin_memory,
+                use_extra_augmentations=getattr(self.config, 'use_extra_augmentations', False)
             )
             
             train_loader, test_loader, self.num_classes, self.class_names = data_loader.create_data_loaders()
@@ -189,7 +217,7 @@ class DualCrossAttentionTrainer:
         
         return criterion.to(self.device)
     
-    def setup_optimizer(self, model: nn.Module) -> Tuple[optim.Optimizer, optim.lr_scheduler._LRScheduler]:
+    def setup_optimizer(self, model: nn.Module, criterion: nn.Module) -> Tuple[optim.Optimizer, optim.lr_scheduler._LRScheduler]:
         """
         Setup optimizer and learning rate scheduler.
         
@@ -197,22 +225,28 @@ class DualCrossAttentionTrainer:
         - FGVC: Adam with cosine scheduling
         - Re-ID: SGD with momentum and cosine scheduling
         
+        Includes both model and criterion parameters (w1, w2, w3 from uncertainty weighting).
+        
         Args:
             model: Model to optimize
+            criterion: Loss function with learnable parameters
             
         Returns:
             optimizer: Configured optimizer
             scheduler: Learning rate scheduler
         """
+        # Combine model and criterion parameters for joint optimization
+        params = list(model.parameters()) + list(criterion.parameters())
+        
         if self.config.task_type == "fgvc":
             optimizer = optim.Adam(
-                model.parameters(),
+                params,
                 lr=self.config.scaled_lr,
                 weight_decay=self.config.weight_decay
             )
         else:  # Re-ID
             optimizer = optim.SGD(
-                model.parameters(),
+                params,
                 lr=self.config.learning_rate,
                 momentum=self.config.momentum,
                 weight_decay=self.config.weight_decay
@@ -264,8 +298,20 @@ class DualCrossAttentionTrainer:
             images = batch['images'].to(self.device)
             labels = batch['labels'].to(self.device)
             
-            # Create pairs for PWCA (shuffle batch for pairing)
-            paired_images = images[torch.randperm(images.size(0))]
+            # Create pairs for PWCA (shuffle batch for pairing, ensure no self-pairing)
+            B = images.size(0)
+            perm_indices = torch.randperm(B, device=self.device)
+            
+            # Ensure no image is paired with itself (as per paper implementation)
+            self_paired = (perm_indices == torch.arange(B, device=self.device))
+            if self_paired.any():
+                # Swap self-paired indices with their neighbors
+                swap_mask = self_paired.nonzero().flatten()
+                for i in swap_mask:
+                    swap_with = (i + 1) % B
+                    perm_indices[i], perm_indices[swap_with] = perm_indices[swap_with].clone(), perm_indices[i].clone()
+            
+            paired_images = images[perm_indices]
             
             # Only zero gradients at the start of accumulation
             if batch_idx % accumulation_steps == 0:
@@ -282,7 +328,9 @@ class DualCrossAttentionTrainer:
                     from torch.cuda.amp import autocast
                     context = autocast()
             else:
-                context = torch.no_grad()
+                # Use nullcontext to enable gradients when AMP is disabled
+                from contextlib import nullcontext
+                context = nullcontext()
             
             with context:
                 outputs = model(images, paired_images)
@@ -368,8 +416,8 @@ class DualCrossAttentionTrainer:
                 images = batch['images'].to(self.device)
                 labels = batch['labels'].to(self.device)
                 
-                # Forward pass (no PWCA during evaluation)
-                outputs = model(images)
+                # Forward pass (no PWCA during evaluation, use inference mode for SA+GLCA combination)
+                outputs = model(images, inference_mode=True)
                 
                 # Compute loss
                 targets = {"labels": labels}
@@ -377,8 +425,17 @@ class DualCrossAttentionTrainer:
                 total_loss += loss.item()
                 num_batches += 1
                 
-                # Update metrics with SA branch predictions (main predictions)
-                if 'sa_logits' in outputs:
+                # Combine SA and GLCA predictions as per paper for FGVC inference
+                if 'sa_logits' in outputs and 'glca_logits' in outputs:
+                    # Convert logits to probabilities and combine (as per paper)
+                    sa_probs = F.softmax(outputs['sa_logits'], dim=-1)
+                    glca_probs = F.softmax(outputs['glca_logits'], dim=-1)
+                    combined_probs = sa_probs + glca_probs
+                    # Convert back to logits for metrics computation
+                    combined_logits = torch.log(combined_probs + 1e-8)
+                    fgvc_metrics.update(combined_logits, labels)
+                elif 'sa_logits' in outputs:
+                    # Fallback to SA only if GLCA is not available
                     fgvc_metrics.update(outputs['sa_logits'], labels)
         
         # Compute final metrics
@@ -389,10 +446,68 @@ class DualCrossAttentionTrainer:
     
     def _evaluate_reid(self, model: nn.Module, data_loader: DataLoader,
                       criterion: nn.Module, split: str) -> Dict[str, float]:
-        """Evaluate Re-ID model (placeholder - needs query/gallery evaluation)"""
-        # For now, return basic metrics
-        # TODO: Implement proper Re-ID evaluation with query/gallery protocol
-        return {"mAP": 0.0, "rank1": 0.0, "rank5": 0.0, "rank10": 0.0}
+        """Evaluate Re-ID model with concatenated SA and GLCA features"""
+        model.eval()
+        all_features = []
+        all_labels = []
+        total_loss = 0.0
+        num_batches = 0
+        
+        with torch.no_grad():
+            for batch in tqdm(data_loader, desc=f"Extracting Re-ID features ({split})"):
+                images = batch['images'].to(self.device)
+                labels = batch['labels'].to(self.device)
+                
+                # Forward pass (no PWCA during evaluation, use inference mode for SA+GLCA combination)
+                outputs = model(images, inference_mode=True)
+                
+                # Concatenate SA and GLCA features as per paper for Re-ID
+                if 'sa_features' in outputs and 'glca_features' in outputs:
+                    # Concatenate final class tokens of SA and GLCA for Re-ID
+                    combined_features = torch.cat([
+                        outputs['sa_features'], 
+                        outputs['glca_features']
+                    ], dim=-1)
+                elif 'sa_features' in outputs:
+                    # Fallback to SA only if GLCA is not available
+                    combined_features = outputs['sa_features']
+                else:
+                    print("Warning: No features available for Re-ID evaluation")
+                    continue
+                
+                all_features.append(combined_features.cpu())
+                all_labels.append(labels.cpu())
+                
+                # Compute loss if available
+                if 'sa_logits' in outputs:
+                    targets = {"labels": labels}
+                    loss, _, _ = criterion(outputs, targets)
+                    total_loss += loss.item()
+                    num_batches += 1
+        
+        # Basic feature statistics (placeholder for full Re-ID evaluation)
+        if all_features:
+            all_features = torch.cat(all_features, dim=0)
+            all_labels = torch.cat(all_labels, dim=0)
+            
+            print(f"Extracted {all_features.shape[0]} features with dimension {all_features.shape[1]}")
+            
+            # Placeholder metrics - proper Re-ID evaluation would need query/gallery protocol
+            metrics = {
+                "mAP": 0.0,  # TODO: Implement proper mAP computation
+                "rank1": 0.0,  # TODO: Implement proper rank-k accuracy
+                "rank5": 0.0,
+                "rank10": 0.0,
+                "feature_dim": all_features.shape[1],
+                "num_features": all_features.shape[0]
+            }
+            
+            if num_batches > 0:
+                metrics["loss"] = total_loss / num_batches
+            
+            return metrics
+        else:
+            return {"mAP": 0.0, "rank1": 0.0, "rank5": 0.0, "rank10": 0.0}
     
     def save_checkpoint(self, model: nn.Module, optimizer: optim.Optimizer,
                        scheduler: optim.lr_scheduler._LRScheduler, epoch: int,
@@ -464,7 +579,7 @@ class DualCrossAttentionTrainer:
         model = self.setup_model()
         train_loader, val_loader, test_loader = self.setup_data_loaders()
         criterion = self.setup_criterion()
-        optimizer, scheduler = self.setup_optimizer(model)
+        optimizer, scheduler = self.setup_optimizer(model, criterion)
         
         # Print training configuration
         accumulation_steps = getattr(self.config, 'gradient_accumulation_steps', 1)
@@ -555,6 +670,10 @@ def parse_arguments():
     parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints", help="Checkpoint directory")
     parser.add_argument("--log_dir", type=str, default="./logs", help="Log directory")
     
+    # Data augmentation
+    parser.add_argument("--use_extra_augmentations", action="store_true", 
+                       help="Enable ColorJitter and RandomRotation (not in paper, FGVC only)")
+    
     # Debugging
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (small dataset)")
     parser.add_argument("--resume", type=str, help="Resume from checkpoint")
@@ -611,6 +730,9 @@ def main():
         config.data_root = args.data_root
     if args.checkpoint_dir:
         config.checkpoint_dir = args.checkpoint_dir
+    
+    # Set augmentation flag (default False to match paper)
+    config.use_extra_augmentations = getattr(args, 'use_extra_augmentations', False)
     
     # Apply ablation settings
     if args.ablation:

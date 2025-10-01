@@ -15,6 +15,8 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, List
 import math
 
+from ..utils.attention_rollout import AttentionRollout
+
 
 class SelfAttention(nn.Module):
     """
@@ -62,6 +64,11 @@ class SelfAttention(nn.Module):
         # Scaled dot-product attention
         attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, num_heads, N, N]
         attn_weights = attn.softmax(dim=-1)
+        
+        # Store clean attention weights for rollout (before dropout)
+        attn_weights_clean = attn_weights
+        
+        # Apply dropout for training
         attn_weights = self.attn_dropout(attn_weights)
         
         # Apply attention to values
@@ -69,7 +76,8 @@ class SelfAttention(nn.Module):
         x = self.proj(x)
         x = self.proj_dropout(x)
         
-        return x, attn_weights
+        # Return clean weights for attention rollout computation
+        return x, attn_weights_clean
 
 
 class GlobalLocalCrossAttention(nn.Module):
@@ -162,7 +170,7 @@ class GlobalLocalCrossAttention(nn.Module):
         selected_indices = selected_indices + 1  # [B, num_selected]
         
         # Select corresponding queries
-        batch_indices = torch.arange(B).unsqueeze(1).expand(-1, num_selected)
+        batch_indices = torch.arange(B, device=queries.device).unsqueeze(1).expand(-1, num_selected)
         local_queries = queries[batch_indices, selected_indices]  # [B, num_selected, C]
         
         return local_queries, selected_indices
@@ -203,18 +211,20 @@ class GlobalLocalCrossAttention(nn.Module):
         output[:, 0] = x[:, 0]  # Keep CLS token unchanged
         
         # Place local attention results back to their positions
-        batch_indices = torch.arange(B).unsqueeze(1).expand(-1, num_selected)
+        batch_indices = torch.arange(B, device=x.device).unsqueeze(1).expand(-1, num_selected)
         # Ensure dtype compatibility for mixed precision training
         output[batch_indices, selected_indices] = out.to(output.dtype)
         
-        # Keep non-selected patches unchanged
-        mask = torch.ones(N, dtype=torch.bool, device=x.device)
-        mask[0] = False  # Exclude CLS token
-        selected_mask = torch.zeros(N, dtype=torch.bool, device=x.device)
-        for b in range(B):
-            selected_mask[selected_indices[b]] = True
-        non_selected_mask = mask & ~selected_mask
-        output[:, non_selected_mask] = x[:, non_selected_mask]
+        # Keep non-selected patches unchanged (per-batch mask)
+        # Create a mask for all positions [B, N]
+        all_mask = torch.ones(B, N, dtype=torch.bool, device=x.device)
+        all_mask[:, 0] = False  # Exclude CLS token (already handled)
+        
+        # Mark selected indices as False (already processed)
+        all_mask[batch_indices, selected_indices] = False
+        
+        # Copy non-selected patches from input
+        output[all_mask] = x[all_mask]
         
         return output, attn_weights
 
@@ -234,35 +244,32 @@ class PairWiseCrossAttention(nn.Module):
     This mechanism is only used during training (T=12 blocks) and removed during
     inference to avoid extra computational cost.
     
+    IMPORTANT: As stated in the paper, "PWCA branch shares weights with the SA branch"
+    This means PWCA reuses the same Q/K/V and projection weights from Self-Attention.
+    
     Args:
-        embed_dim: Embedding dimension
-        num_heads: Number of attention heads
-        dropout: Dropout probability
-        qkv_bias: Whether to add bias to projections
+        sa_attention: The SelfAttention module to share weights with
+        dropout: Dropout probability for attention weights
     
     Returns:
         output: Cross-attended features with pair-wise regularization
-        attention_weights: Combined attention weights (2N+2 total scores)
+        attention_weights: Combined attention weights (2N total scores, where N includes CLS token)
     """
     
-    def __init__(self, embed_dim: int = 768, num_heads: int = 12,
-                 dropout: float = 0.1, qkv_bias: bool = True):
+    def __init__(self, sa_attention: SelfAttention, dropout: float = 0.1):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        self.sa_attention = sa_attention  # Share weights with SA
+        self.embed_dim = sa_attention.embed_dim
+        self.num_heads = sa_attention.num_heads
+        self.head_dim = sa_attention.head_dim
+        self.scale = sa_attention.scale
         
-        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
-        
-        self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=qkv_bias)
+        # Use SA's dropout settings, but allow override for PWCA-specific dropout
         self.attn_dropout = nn.Dropout(dropout)
-        self.proj = nn.Linear(embed_dim, embed_dim)
-        self.proj_dropout = nn.Dropout(dropout)
     
     def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass with image pair.
+        Forward pass with image pair using shared SA weights.
         
         Args:
             x1: Target image features (the image being trained)
@@ -274,29 +281,30 @@ class PairWiseCrossAttention(nn.Module):
         """
         B, N, C = x1.shape
         
-        # Generate Q from target image x1
-        q1 = self.qkv(x1)[:, :, :C].reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # Use shared SA weights for Q, K, V generation
+        # Generate Q from target image x1 using SA's qkv projection
+        qkv1 = self.sa_attention.qkv(x1).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q1, k1, v1 = qkv1.unbind(0)  # [B, num_heads, N, head_dim]
         
-        # Generate K, V from both images and concatenate
-        kv1 = self.qkv(x1)[:, :, C:].reshape(B, N, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        kv2 = self.qkv(x2)[:, :, C:].reshape(B, N, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        
-        k1, v1 = kv1.unbind(0)  # [B, num_heads, N, head_dim]
-        k2, v2 = kv2.unbind(0)  # [B, num_heads, N, head_dim]
+        # Generate K, V from distractor image x2 using SA's qkv projection
+        qkv2 = self.sa_attention.qkv(x2).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q2, k2, v2 = qkv2.unbind(0)  # [B, num_heads, N, head_dim]
         
         # Concatenate key and value matrices: K_c = [K_1; K_2], V_c = [V_1; V_2]
         k_combined = torch.cat([k1, k2], dim=2)  # [B, num_heads, 2N, head_dim]
         v_combined = torch.cat([v1, v2], dim=2)  # [B, num_heads, 2N, head_dim]
         
-        # Cross-attention with combined key-values
+        # Cross-attention: Q1 attends to combined K,V from both images
         attn = (q1 @ k_combined.transpose(-2, -1)) * self.scale  # [B, num_heads, N, 2N]
         attn_weights = attn.softmax(dim=-1)
         attn_weights = self.attn_dropout(attn_weights)
         
         # Apply attention to combined values
         x = (attn_weights @ v_combined).transpose(1, 2).reshape(B, N, C)  # [B, N, C]
-        x = self.proj(x)
-        x = self.proj_dropout(x)
+        
+        # Use shared SA projection weights
+        x = self.sa_attention.proj(x)
+        x = self.sa_attention.proj_dropout(x)
         
         return x, attn_weights
     
@@ -334,86 +342,4 @@ class PairWiseCrossAttention(nn.Module):
         return x1, x2
 
 
-class AttentionRollout:
-    """
-    Attention Rollout computation for identifying important patches.
-    
-    Based on the attention rollout method and the implementation in vit_rollout.py.
-    This class computes the accumulated attention scores across all transformer layers
-    to identify which input patches are most important for the model's decisions.
-    
-    Used by GLCA to select high-response local regions for cross-attention.
-    """
-    
-    def __init__(self, discard_ratio: float = 0.9, head_fusion: str = "mean"):
-        """
-        Args:
-            discard_ratio: Ratio of lowest attention paths to discard (default: 0.9)
-            head_fusion: Method to fuse multi-head attention ("mean", "max", "min")
-        """
-        self.discard_ratio = discard_ratio
-        self.head_fusion = head_fusion
-    
-    def rollout(self, attentions: List[torch.Tensor]) -> torch.Tensor:
-        """
-        Compute attention rollout across all layers.
-        
-        Implements the rollout computation from the paper and vit_rollout.py:
-        - Fuses attention heads using specified method
-        - Adds identity matrix for residual connections  
-        - Multiplies attention matrices across all layers
-        - Returns CLS token attention to all patches
-        
-        Args:
-            attentions: List of attention matrices from all SA layers
-            
-        Returns:
-            rollout_scores: CLS token attention scores for all patches
-        """
-        if not attentions:
-            return None
-            
-        device = attentions[0].device
-        B = attentions[0].size(0)
-        seq_len = attentions[0].size(-1)
-        
-        # Initialize result matrix as identity
-        result = torch.eye(seq_len, device=device).unsqueeze(0).expand(B, -1, -1)
-        
-        with torch.no_grad():
-            for attention in attentions:
-                # Fuse attention heads
-                if self.head_fusion == "mean":
-                    attention_heads_fused = attention.mean(dim=1)
-                elif self.head_fusion == "max":
-                    attention_heads_fused = attention.max(dim=1)[0]
-                elif self.head_fusion == "min":
-                    attention_heads_fused = attention.min(dim=1)[0]
-                else:
-                    raise ValueError(f"Unknown head fusion method: {self.head_fusion}")
-                
-                # Drop the lowest attentions, but don't drop the class token
-                flat = attention_heads_fused.view(B, seq_len, -1)
-                _, indices = flat.topk(int(flat.size(-1) * self.discard_ratio), dim=-1, largest=False)
-                
-                # Don't discard class token (position 0)
-                mask = torch.ones_like(flat)
-                mask.scatter_(-1, indices, 0)
-                mask[:, :, 0] = 1  # Keep class token
-                attention_heads_fused = attention_heads_fused * mask
-                
-                # Add identity matrix for residual connections (Ŝ = 0.5*S + 0.5*I)
-                I = torch.eye(seq_len, device=device).unsqueeze(0).expand(B, -1, -1)
-                attention_heads_fused = (attention_heads_fused + I) / 2
-                
-                # Normalize
-                attention_heads_fused = attention_heads_fused / attention_heads_fused.sum(dim=-1, keepdim=True)
-                
-                # Multiply with previous result
-                result = torch.matmul(attention_heads_fused, result)
-        
-        # Extract CLS token attention to all patches (first row, excluding CLS token itself)
-        cls_attention = result[:, 0, 1:]  # [B, num_patches]
-        
-        return cls_attention
 

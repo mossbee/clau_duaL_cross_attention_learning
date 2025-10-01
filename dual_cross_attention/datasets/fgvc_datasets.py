@@ -302,6 +302,8 @@ class FGVCDataLoader:
         batch_size: Training batch size (default: 16 as in paper)
         num_workers: Number of data loading workers
         pin_memory: Whether to pin memory for GPU transfer
+        use_extra_augmentations: Whether to use ColorJitter and RandomRotation (default: False)
+                                 These augmentations are not specified in the paper
         
     Returns:
         train_loader: Training data loader with pair sampling
@@ -311,7 +313,8 @@ class FGVCDataLoader:
     """
     
     def __init__(self, dataset_name: str, root_dirs: Dict[str, str],
-                 batch_size: int = 16, num_workers: int = 4, pin_memory: bool = True):
+                 batch_size: int = 16, num_workers: int = 4, pin_memory: bool = True,
+                 use_extra_augmentations: bool = False):
         self.dataset_name = dataset_name
         self.root_dirs = root_dirs
         self.batch_size = batch_size
@@ -320,7 +323,8 @@ class FGVCDataLoader:
         
         # Import transforms here to avoid circular import
         from .transforms import get_transform_factory
-        self.train_transform = get_transform_factory("fgvc", dataset_name, is_training=True)
+        self.train_transform = get_transform_factory("fgvc", dataset_name, is_training=True,
+                                                     use_extra_augmentations=use_extra_augmentations)
         self.test_transform = get_transform_factory("fgvc", dataset_name, is_training=False)
     
     def create_data_loaders(self) -> Tuple[DataLoader, DataLoader, int, List[str]]:

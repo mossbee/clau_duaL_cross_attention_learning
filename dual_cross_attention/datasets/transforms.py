@@ -30,7 +30,7 @@ class FGVCTransforms:
     Data transforms for Fine-Grained Visual Categorization.
     
     Implements the exact preprocessing pipeline described in the paper:
-    - Training: Resize(550x550) -> RandomCrop(448x448) -> Augmentations
+    - Training: Resize(550x550) -> RandomCrop(448x448) -> RandomHorizontalFlip
     - Testing: Resize(550x550) -> CenterCrop(448x448)
     - ImageNet normalization: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     
@@ -40,28 +40,34 @@ class FGVCTransforms:
         resize_size: Intermediate resize size (default: 550x550)  
         mean: Normalization mean values
         std: Normalization standard deviation values
+        use_extra_augmentations: Whether to use ColorJitter and RandomRotation (default: False)
+                                 Set to True for potential performance improvements, but not in paper
     """
     
     def __init__(self, is_training: bool = True, input_size: int = 448, 
                  resize_size: int = 550, mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
-                 std: Tuple[float, float, float] = (0.229, 0.224, 0.225)):
+                 std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
+                 use_extra_augmentations: bool = False):
         self.is_training = is_training
         self.input_size = input_size
         self.resize_size = resize_size
         self.mean = mean
         self.std = std
+        self.use_extra_augmentations = use_extra_augmentations
     
     def get_transforms(self) -> transforms.Compose:
         """
         Get the composed transforms for FGVC.
         
-        Training transforms include:
+        Training transforms (as specified in paper):
         - Resize to 550x550
         - Random crop to 448x448
         - Random horizontal flip
+        - Normalization
+        
+        Optional extra augmentations (if use_extra_augmentations=True):
         - Color jittering 
         - Random rotation
-        - Normalization
         
         Test transforms include:
         - Resize to 550x550  
@@ -82,11 +88,19 @@ class FGVCTransforms:
             transforms.Resize((self.resize_size, self.resize_size)),
             transforms.RandomCrop(self.input_size),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-            transforms.RandomRotation(degrees=10),
+        ]
+        
+        # Add extra augmentations if enabled (not specified in paper)
+        if self.use_extra_augmentations:
+            transform_list.extend([
+                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
+                transforms.RandomRotation(degrees=10),
+            ])
+        
+        transform_list.extend([
             transforms.ToTensor(),
             transforms.Normalize(mean=self.mean, std=self.std)
-        ]
+        ])
         return transforms.Compose(transform_list)
     
     def get_test_transforms(self) -> transforms.Compose:
@@ -269,7 +283,8 @@ class PairWiseTransform:
         pass
 
 
-def get_transform_factory(task_type: str, dataset_name: str, is_training: bool = True) -> transforms.Compose:
+def get_transform_factory(task_type: str, dataset_name: str, is_training: bool = True, 
+                          use_extra_augmentations: bool = False) -> transforms.Compose:
     """
     Factory function to get appropriate transforms for task and dataset.
     
@@ -282,6 +297,8 @@ def get_transform_factory(task_type: str, dataset_name: str, is_training: bool =
         task_type: "fgvc" or "reid"
         dataset_name: Specific dataset name
         is_training: Whether to get training or test transforms
+        use_extra_augmentations: For FGVC only - whether to use extra augmentations
+                                 (ColorJitter, RandomRotation) not specified in paper
         
     Returns:
         transform: Appropriate transform composition
@@ -289,7 +306,8 @@ def get_transform_factory(task_type: str, dataset_name: str, is_training: bool =
     
     if task_type == "fgvc":
         # FGVC datasets use 448x448 input
-        fgvc_transforms = FGVCTransforms(is_training=is_training, input_size=448, resize_size=550)
+        fgvc_transforms = FGVCTransforms(is_training=is_training, input_size=448, resize_size=550,
+                                         use_extra_augmentations=use_extra_augmentations)
         return fgvc_transforms.get_transforms()
     
     elif task_type == "reid":

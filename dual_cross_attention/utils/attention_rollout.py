@@ -41,7 +41,8 @@ class AttentionRollout:
     """
     
     def __init__(self, discard_ratio: float = 0.9, head_fusion: str = "mean"):
-        pass
+        self.discard_ratio = discard_ratio
+        self.head_fusion = head_fusion
     
     def rollout(self, attentions: List[torch.Tensor]) -> torch.Tensor:
         """
@@ -62,7 +63,52 @@ class AttentionRollout:
             rollout_scores: CLS token attention scores for all patches
                           Shape: [batch_size, num_patches]
         """
-        pass
+        if not attentions:
+            return None
+            
+        device = attentions[0].device
+        B = attentions[0].size(0)
+        seq_len = attentions[0].size(-1)
+        
+        # Initialize result matrix as identity
+        result = torch.eye(seq_len, device=device).unsqueeze(0).expand(B, -1, -1)
+        
+        with torch.no_grad():
+            for attention in attentions:
+                # Fuse attention heads using specified method
+                attention_heads_fused = self.fuse_attention_heads(attention)
+                
+                # Drop the lowest attentions, but don't drop the class token
+                # Based on vit_rollout.py logic: discard lowest attention values but keep class token
+                flat = attention_heads_fused.view(B, seq_len, -1)
+                _, indices = flat.topk(int(flat.size(-1) * self.discard_ratio), dim=-1, largest=False)
+                
+                # Create mask and zero out lowest attentions
+                # Don't discard attention to class token (position 0 in each sequence)
+                mask = torch.ones_like(flat)
+                mask.scatter_(-1, indices, 0)
+                
+                # Ensure class token column is always kept (position 0)
+                mask[:, :, 0] = 1
+                
+                # Reshape mask back and apply
+                attention_heads_fused = attention_heads_fused * mask.view_as(attention_heads_fused)
+                
+                # Add identity matrix for residual connections (S̄ = 0.5*S + 0.5*I)
+                # This accounts for residual connections in transformer: out = attn(x) + x
+                I = torch.eye(seq_len, device=device).unsqueeze(0).expand(B, -1, -1)
+                attention_heads_fused = (attention_heads_fused + I) / 2
+                
+                # Re-normalize after adding identity
+                attention_heads_fused = attention_heads_fused / attention_heads_fused.sum(dim=-1, keepdim=True)
+                
+                # Recursively multiply: Ŝ_i = S̄_i ⊗ S̄_{i-1} ⊗ ... ⊗ S̄_1
+                result = torch.matmul(attention_heads_fused, result)
+        
+        # Extract CLS token attention to all patches (first row, excluding CLS token itself)
+        cls_attention = result[:, 0, 1:]  # [B, num_patches]
+        
+        return cls_attention
     
     def fuse_attention_heads(self, attention: torch.Tensor) -> torch.Tensor:
         """
@@ -74,7 +120,14 @@ class AttentionRollout:
         Returns:
             fused_attention: Single attention matrix [batch, seq, seq]
         """
-        pass
+        if self.head_fusion == "mean":
+            return attention.mean(dim=1)
+        elif self.head_fusion == "max":
+            return attention.max(dim=1)[0]
+        elif self.head_fusion == "min":
+            return attention.min(dim=1)[0]
+        else:
+            raise ValueError(f"Unknown head fusion method: {self.head_fusion}")
     
     def get_cls_attention_map(self, rollout_result: torch.Tensor, 
                              img_size: Tuple[int, int], patch_size: int = 16) -> np.ndarray:
@@ -92,7 +145,23 @@ class AttentionRollout:
         Returns:
             attention_map: 2D spatial attention map [height/patch_size, width/patch_size]
         """
-        pass
+        if rollout_result is None:
+            return None
+            
+        # Get the first image in batch
+        cls_attention = rollout_result[0].cpu().numpy()
+        
+        # Calculate grid size
+        grid_h = img_size[0] // patch_size
+        grid_w = img_size[1] // patch_size
+        
+        # Reshape to 2D spatial map
+        attention_map = cls_attention.reshape(grid_h, grid_w)
+        
+        # Normalize to [0, 1]
+        attention_map = attention_map / np.max(attention_map)
+        
+        return attention_map
 
 
 def rollout_attention_maps(model: nn.Module, input_tensor: torch.Tensor,
@@ -116,15 +185,47 @@ def rollout_attention_maps(model: nn.Module, input_tensor: torch.Tensor,
     
     # Hook function to collect attention weights
     attention_weights = {"sa": [], "glca": []}
+    hooks = []
     
     def get_attention_hook(name):
         def hook(module, input, output):
             # Extract attention weights from module output
             if hasattr(output, 'attention_weights'):
                 attention_weights[name].append(output.attention_weights)
+            elif len(output) > 1 and isinstance(output[1], torch.Tensor):
+                # Assume second output is attention weights
+                attention_weights[name].append(output[1])
         return hook
     
-    pass
+    # Register hooks for SA and GLCA layers
+    for name, module in model.named_modules():
+        if 'self_attention' in name or 'sa_block' in name:
+            hook = module.register_forward_hook(get_attention_hook("sa"))
+            hooks.append(hook)
+        elif 'global_local_cross_attention' in name or 'glca_block' in name:
+            hook = module.register_forward_hook(get_attention_hook("glca"))
+            hooks.append(hook)
+    
+    # Forward pass to collect attention weights
+    model.eval()
+    with torch.no_grad():
+        _ = model(input_tensor)
+    
+    # Remove hooks
+    for hook in hooks:
+        hook.remove()
+    
+    # Compute rollout for each branch
+    rollout_computer = AttentionRollout(discard_ratio, head_fusion)
+    rollout_maps = {}
+    
+    if attention_weights["sa"]:
+        rollout_maps["sa_rollout"] = rollout_computer.rollout(attention_weights["sa"])
+    
+    if attention_weights["glca"]:
+        rollout_maps["glca_rollout"] = rollout_computer.rollout(attention_weights["glca"])
+    
+    return rollout_maps
 
 
 def visualize_attention_rollout(image: np.ndarray, attention_map: np.ndarray,
@@ -144,7 +245,27 @@ def visualize_attention_rollout(image: np.ndarray, attention_map: np.ndarray,
     Returns:
         visualization: Combined image with attention overlay [height, width, 3]
     """
-    pass
+    # Ensure image is float32 in range [0, 1]
+    img = np.float32(image) / 255
+    
+    # Resize attention map to match image size
+    attention_resized = cv2.resize(attention_map, (img.shape[1], img.shape[0]))
+    
+    # Create heatmap
+    heatmap = cv2.applyColorMap(np.uint8(255 * attention_resized), cv2.COLORMAP_JET)
+    heatmap = np.float32(heatmap) / 255
+    
+    # Overlay heatmap on image
+    cam = alpha * img + (1 - alpha) * heatmap
+    cam = cam / np.max(cam)
+    
+    # Convert back to uint8
+    visualization = np.uint8(255 * cam)
+    
+    if save_path is not None:
+        cv2.imwrite(save_path, visualization)
+    
+    return visualization
 
 
 def extract_high_response_regions(rollout_scores: torch.Tensor, top_k_ratio: float = 0.1) -> torch.Tensor:
@@ -161,7 +282,16 @@ def extract_high_response_regions(rollout_scores: torch.Tensor, top_k_ratio: flo
     Returns:
         high_response_indices: Indices of selected patches [batch_size, num_selected]
     """
-    pass
+    if rollout_scores is None:
+        return None
+        
+    B, num_patches = rollout_scores.shape
+    top_k = int(num_patches * top_k_ratio)
+    
+    # Get indices of top-k patches with highest attention scores
+    _, high_response_indices = torch.topk(rollout_scores, top_k, dim=-1, largest=True)
+    
+    return high_response_indices
 
 
 def compute_attention_statistics(attention_weights: List[torch.Tensor]) -> Dict[str, float]:
@@ -177,7 +307,30 @@ def compute_attention_statistics(attention_weights: List[torch.Tensor]) -> Dict[
     Returns:
         stats: Dictionary with attention statistics (entropy, max values, etc.)
     """
-    pass
+    if not attention_weights:
+        return {}
+    
+    stats = {}
+    all_attentions = torch.cat([attn.flatten() for attn in attention_weights])
+    
+    # Basic statistics
+    stats['mean'] = all_attentions.mean().item()
+    stats['std'] = all_attentions.std().item()
+    stats['min'] = all_attentions.min().item()
+    stats['max'] = all_attentions.max().item()
+    
+    # Entropy statistics
+    entropies = []
+    for attn in attention_weights:
+        # Compute entropy for each attention head and layer
+        attn_flat = attn.view(-1, attn.size(-1))
+        entropy = -(attn_flat * torch.log(attn_flat + 1e-8)).sum(dim=-1)
+        entropies.append(entropy.mean().item())
+    
+    stats['mean_entropy'] = np.mean(entropies)
+    stats['std_entropy'] = np.std(entropies)
+    
+    return stats
 
 
 class AttentionHook:
@@ -189,7 +342,8 @@ class AttentionHook:
     """
     
     def __init__(self):
-        pass
+        self.attention_weights = {}
+        self.hooks = []
     
     def register_hooks(self, model: nn.Module, layer_names: List[str]):
         """
@@ -199,7 +353,22 @@ class AttentionHook:
             model: Model to register hooks on
             layer_names: Names of layers to hook into
         """
-        pass
+        def get_hook(name):
+            def hook(module, input, output):
+                if name not in self.attention_weights:
+                    self.attention_weights[name] = []
+                
+                # Extract attention weights from output
+                if hasattr(output, 'attention_weights'):
+                    self.attention_weights[name].append(output.attention_weights)
+                elif isinstance(output, tuple) and len(output) > 1:
+                    self.attention_weights[name].append(output[1])
+            return hook
+        
+        for name, module in model.named_modules():
+            if any(layer_name in name for layer_name in layer_names):
+                hook = module.register_forward_hook(get_hook(name))
+                self.hooks.append(hook)
     
     def get_attention_weights(self) -> Dict[str, List[torch.Tensor]]:
         """
@@ -208,9 +377,12 @@ class AttentionHook:
         Returns:
             attention_weights: Dictionary mapping layer names to attention weights
         """
-        pass
+        return self.attention_weights
     
     def clear_hooks(self):
         """Remove all registered hooks"""
-        pass
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+        self.attention_weights = {}
 

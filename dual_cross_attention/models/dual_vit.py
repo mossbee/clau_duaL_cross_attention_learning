@@ -20,6 +20,85 @@ from .vit_backbone import VisionTransformer, TransformerBlock, PatchEmbedding
 from .attention_modules import SelfAttention, GlobalLocalCrossAttention, PairWiseCrossAttention
 
 
+class TransformerBlockWithPWCA(nn.Module):
+    """
+    Transformer block that supports both SA and PWCA with shared weights.
+    
+    This block implements the weight sharing between SA and PWCA branches as 
+    described in the paper: "The PWCA branch shares weights with the SA branch"
+    
+    During training:
+    - SA branch: processes x through self-attention
+    - PWCA branch: processes (x, x_pair) through pair-wise cross-attention using SAME weights
+    
+    During inference:
+    - Only SA branch is used (PWCA is disabled)
+    
+    Args:
+        embed_dim: Embedding dimension
+        num_heads: Number of attention heads
+        hidden_dim: FFN hidden dimension
+        dropout: Dropout probability
+    
+    Returns:
+        sa_output: Self-attention output
+        pwca_output: Pair-wise cross-attention output (training only)
+        sa_weights: Self-attention weights for rollout
+    """
+    
+    def __init__(self, embed_dim: int = 768, num_heads: int = 12,
+                 hidden_dim: int = 3072, dropout: float = 0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        
+        # Self-Attention components
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.sa = SelfAttention(embed_dim, num_heads, dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, embed_dim),
+            nn.Dropout(dropout)
+        )
+        
+        # PWCA uses the SAME SA module (weight sharing)
+        self.pwca = PairWiseCrossAttention(self.sa, dropout)
+    
+    def forward(self, x: torch.Tensor, x_pair: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass with optional PWCA computation.
+        
+        Args:
+            x: Input features [B, N, C]
+            x_pair: Paired features for PWCA (training only) [B, N, C]
+            
+        Returns:
+            outputs: Dictionary with 'sa_output', 'sa_weights', and optionally 'pwca_output'
+        """
+        outputs = {}
+        
+        # Self-Attention branch
+        sa_out, sa_weights = self.sa(self.norm1(x))
+        sa_out = x + sa_out
+        sa_out = sa_out + self.ffn(self.norm2(sa_out))
+        
+        outputs['sa_output'] = sa_out
+        outputs['sa_weights'] = sa_weights
+        
+        # Pair-Wise Cross-Attention branch (training only, shares weights with SA)
+        if x_pair is not None and self.training:
+            pwca_out, pwca_weights = self.pwca(self.norm1(x), self.norm1(x_pair))
+            pwca_out = x + pwca_out
+            pwca_out = pwca_out + self.ffn(self.norm2(pwca_out))
+            
+            outputs['pwca_output'] = pwca_out
+            outputs['pwca_weights'] = pwca_weights
+        
+        return outputs
+
+
 class DualCrossAttentionBlock(nn.Module):
     """
     Combined attention block containing SA, GLCA, and PWCA mechanisms.
@@ -81,7 +160,7 @@ class DualCrossAttentionBlock(nn.Module):
         # Pair-Wise Cross-Attention branch (shares weights with SA)
         if use_pwca:
             self.norm_pwca = nn.LayerNorm(embed_dim)
-            self.pwca = PairWiseCrossAttention(embed_dim, num_heads, dropout)
+            self.pwca = PairWiseCrossAttention(self.sa, dropout)
     
     def forward(self, x: torch.Tensor, x_pair: Optional[torch.Tensor] = None,
                 attention_history: Optional[List[torch.Tensor]] = None) -> Dict[str, torch.Tensor]:
@@ -219,24 +298,32 @@ class DualCrossAttentionViT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(dropout)
         
-        # SA blocks (L=12)
-        self.sa_blocks = nn.ModuleList([
-            TransformerBlock(embed_dim, num_heads, hidden_dim, dropout)
+        # ============================================================================
+        # ARCHITECTURE SUMMARY (from paper Section 3):
+        # ============================================================================
+        # 1. L=12 Self-Attention (SA) blocks + T=12 Pair-Wise Cross-Attention (PWCA) blocks
+        #    → IMPLEMENTED AS: 12 TransformerBlockWithPWCA blocks
+        #    → WEIGHT SHARING: PWCA shares weights with SA (same Q/K/V projections)
+        #    → During training: Each block processes both SA(x) and PWCA(x, x_pair)
+        #    → During inference: Only SA(x) is used, PWCA is disabled
+        #
+        # 2. M=1 Global-Local Cross-Attention (GLCA) block  
+        #    → IMPLEMENTED AS: 1 DualCrossAttentionBlock (uses SA-refined features)
+        #    → INDEPENDENT WEIGHTS: GLCA has separate weights from SA/PWCA
+        #    → Takes SA-refined embeddings and attention history as input
+        # ============================================================================
+        
+        # SA/PWCA blocks (L=12, T=12) - PWCA shares weights with SA
+        self.sa_pwca_blocks = nn.ModuleList([
+            TransformerBlockWithPWCA(embed_dim, num_heads, hidden_dim, dropout)
             for _ in range(num_sa_layers)
         ])
         
-        # GLCA blocks (M=1)
+        # GLCA blocks (M=1) - Independent weights from SA
         self.glca_blocks = nn.ModuleList([
             DualCrossAttentionBlock(embed_dim, num_heads, hidden_dim, dropout, 
                                   top_k_ratio, use_pwca=False)
             for _ in range(num_glca_layers)
-        ])
-        
-        # PWCA blocks (T=12, training only)
-        self.pwca_blocks = nn.ModuleList([
-            DualCrossAttentionBlock(embed_dim, num_heads, hidden_dim, dropout,
-                                  top_k_ratio, use_pwca=True)  
-            for _ in range(num_pwca_layers)
         ])
         
         # Final normalization and classification heads
@@ -269,7 +356,8 @@ class DualCrossAttentionViT(nn.Module):
                 nn.init.constant_(m.bias, 0)
                 nn.init.constant_(m.weight, 1.0)
     
-    def forward(self, x: torch.Tensor, x_pair: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor, x_pair: Optional[torch.Tensor] = None, 
+               inference_mode: bool = False) -> Dict[str, torch.Tensor]:
         """
         Forward pass through dual cross-attention architecture.
         
@@ -302,23 +390,44 @@ class DualCrossAttentionViT(nn.Module):
             x_pair = x_pair + self.pos_embed
             x_pair = self.pos_drop(x_pair)
         
-        # SA branch - L=12 blocks
+        # SA/PWCA branch - L=12, T=12 blocks with SHARED weights
+        # Per paper: "The PWCA branch shares weights with the SA branch"
         sa_attention_history = []
         sa_x = x.clone()
+        pwca_x = x.clone() if (x_pair is not None and self.training) else None
         
-        for block in self.sa_blocks:
-            sa_x, attn_weights = block(sa_x)
-            sa_attention_history.append(attn_weights)
+        for block in self.sa_pwca_blocks:
+            # Process both SA and PWCA through the SAME block (shared weights)
+            block_outputs = block(sa_x, x_pair=x_pair if self.training else None)
+            
+            # Update SA branch
+            sa_x = block_outputs['sa_output']
+            sa_attention_history.append(block_outputs['sa_weights'])
+            
+            # Update PWCA branch (training only)
+            if 'pwca_output' in block_outputs:
+                pwca_x = block_outputs['pwca_output']
         
+        # SA branch output
         sa_features = self.norm(sa_x)[:, 0]  # CLS token
         sa_logits = self.sa_head(sa_features)
         
         outputs['sa_logits'] = sa_logits
         outputs['sa_features'] = sa_features
         
-        # GLCA branch - M=1 block  
+        # PWCA branch output (training only, shares classification head with SA)
+        if pwca_x is not None:
+            pwca_features = self.norm(pwca_x)[:, 0]  # CLS token
+            pwca_logits = self.sa_head(pwca_features)  # Share head with SA
+            
+            outputs['pwca_logits'] = pwca_logits
+            outputs['pwca_features'] = pwca_features
+        
+        # GLCA branch - M=1 block (uses SA-refined embeddings, INDEPENDENT weights)
+        # Per paper: "GLCA does not share weights with SA"
         if len(self.glca_blocks) > 0:
-            glca_x = x.clone()
+            # Use SA-refined embeddings as input to GLCA for coordinated learning
+            glca_x = sa_x.clone()
             
             for block in self.glca_blocks:
                 block_outputs = block(glca_x, attention_history=sa_attention_history)
@@ -331,25 +440,28 @@ class DualCrossAttentionViT(nn.Module):
             outputs['glca_logits'] = glca_logits
             outputs['glca_features'] = glca_features
         
-        # PWCA branch - T=12 blocks (training only)
-        if x_pair is not None and self.training:
-            pwca_x = x.clone()
-            
-            for block in self.pwca_blocks:
-                block_outputs = block(pwca_x, x_pair=x_pair)
-                if 'sa_output' in block_outputs:  # PWCA uses SA architecture
-                    pwca_x = block_outputs['sa_output']
-            
-            pwca_features = self.norm(pwca_x)[:, 0]  # CLS token
-            pwca_logits = self.sa_head(pwca_features)  # Share head with SA
-            
-            outputs['pwca_logits'] = pwca_logits
-            outputs['pwca_features'] = pwca_features
-        
         # Store attention maps for visualization
         self.attention_maps = {
             'sa_attention': sa_attention_history,
         }
+        
+        # Add inference-time combinations as per paper
+        if inference_mode and not self.training:
+            if self.task_type == "fgvc" and 'sa_logits' in outputs and 'glca_logits' in outputs:
+                # FGVC: Add class probabilities from SA and GLCA
+                sa_probs = torch.nn.functional.softmax(outputs['sa_logits'], dim=-1)
+                glca_probs = torch.nn.functional.softmax(outputs['glca_logits'], dim=-1)
+                combined_probs = sa_probs + glca_probs
+                outputs['combined_logits'] = torch.log(combined_probs + 1e-8)
+                outputs['combined_probs'] = combined_probs
+                
+            elif self.task_type == "reid" and 'sa_features' in outputs and 'glca_features' in outputs:
+                # Re-ID: Concatenate final class tokens from SA and GLCA
+                combined_features = torch.cat([
+                    outputs['sa_features'], 
+                    outputs['glca_features']
+                ], dim=-1)
+                outputs['combined_features'] = combined_features
         
         return outputs
     
@@ -401,8 +513,8 @@ class DualCrossAttentionViT(nn.Module):
         self.cls_token.requires_grad = False
         self.pos_embed.requires_grad = False
         
-        # Freeze SA blocks 
-        for block in self.sa_blocks:
+        # Freeze SA/PWCA blocks 
+        for block in self.sa_pwca_blocks:
             for param in block.parameters():
                 param.requires_grad = False
         
@@ -420,12 +532,101 @@ class DualCrossAttentionViT(nn.Module):
             checkpoint_path: Path to pretrained ViT checkpoint (.npz or .pth)
         """
         import numpy as np
+        from scipy import ndimage
+        
+        def numpy_to_torch(weights_np, conv: bool = False):
+            if conv:
+                # HWIO -> OIHW
+                weights_np = weights_np.transpose([3, 2, 0, 1])
+            return torch.from_numpy(weights_np)
         
         if checkpoint_path.endswith('.npz'):
             # Load from numpy format (original Google checkpoints)
-            checkpoint = np.load(checkpoint_path)
-            # Convert and load weights (implementation depends on checkpoint format)
+            weights = np.load(checkpoint_path, allow_pickle=True)
             print(f"Loading pretrained weights from {checkpoint_path}")
+            with torch.no_grad():
+                # Patch embedding proj
+                if 'embedding/kernel' in weights and 'embedding/bias' in weights:
+                    w = numpy_to_torch(weights['embedding/kernel'], conv=True)
+                    b = numpy_to_torch(weights['embedding/bias'])
+                    self.patch_embed.proj.weight.copy_(w)
+                    self.patch_embed.proj.bias.copy_(b)
+                
+                # CLS token
+                if 'cls' in weights:
+                    self.cls_token.copy_(numpy_to_torch(weights['cls']))
+                
+                # Encoder norm -> our final norm
+                if 'Transformer/encoder_norm/scale' in weights and 'Transformer/encoder_norm/bias' in weights:
+                    self.norm.weight.copy_(numpy_to_torch(weights['Transformer/encoder_norm/scale']))
+                    self.norm.bias.copy_(numpy_to_torch(weights['Transformer/encoder_norm/bias']))
+                
+                # Position embeddings (resize if needed)
+                if 'Transformer/posembed_input/pos_embedding' in weights:
+                    posemb = numpy_to_torch(weights['Transformer/posembed_input/pos_embedding'])
+                    posemb_new = self.pos_embed
+                    if posemb.size() == posemb_new.size():
+                        self.pos_embed.copy_(posemb)
+                    else:
+                        ntok_new = posemb_new.size(1)
+                        # split between class and the rest
+                        posemb_tok, posemb_grid = posemb[:, :1], posemb[0, 1:]
+                        ntok_new -= 1
+                        gs_old = int(np.sqrt(len(posemb_grid)))
+                        gs_new = int(np.sqrt(ntok_new))
+                        posemb_grid = posemb_grid.reshape(gs_old, gs_old, -1)
+                        zoom = (gs_new / gs_old, gs_new / gs_old, 1)
+                        posemb_grid = ndimage.zoom(posemb_grid, zoom, order=1)
+                        posemb_grid = posemb_grid.reshape(1, gs_new * gs_new, -1)
+                        posemb = torch.cat([posemb_tok, numpy_to_torch(posemb_grid)], dim=1)
+                        self.pos_embed.copy_(posemb)
+                
+                # Encoder blocks -> our SA/PWCA blocks
+                # ViT-pytorch naming:
+                # ROOT = f"Transformer/encoderblock_{i}"
+                # query/key/value/out, LayerNorm_0 and LayerNorm_2, MlpBlock_3/Dense_0, Dense_1
+                hidden_size = self.embed_dim
+                for i, block in enumerate(self.sa_pwca_blocks):
+                    root = f"Transformer/encoderblock_{i}"
+                    # Collect attention linear weights (separate in npz, combined in our module)
+                    try:
+                        q_w = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/query/kernel"]).view(hidden_size, hidden_size).t()
+                        k_w = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/key/kernel"]).view(hidden_size, hidden_size).t()
+                        v_w = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/value/kernel"]).view(hidden_size, hidden_size).t()
+                        q_b = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/query/bias"]).view(-1)
+                        k_b = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/key/bias"]).view(-1)
+                        v_b = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/value/bias"]).view(-1)
+                        # Combine into qkv (for SA, which PWCA shares)
+                        block.sa.qkv.weight.copy_(torch.cat([q_w, k_w, v_w], dim=0))
+                        block.sa.qkv.bias.copy_(torch.cat([q_b, k_b, v_b], dim=0))
+                        # Attention out/proj
+                        out_w = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/out/kernel"]).view(hidden_size, hidden_size).t()
+                        out_b = numpy_to_torch(weights[f"{root}/MultiHeadDotProductAttention_1/out/bias"]).view(-1)
+                        block.sa.proj.weight.copy_(out_w)
+                        block.sa.proj.bias.copy_(out_b)
+                        
+                        # MLP (FFN)
+                        fc1_w = numpy_to_torch(weights[f"{root}/MlpBlock_3/Dense_0/kernel"]).t()
+                        fc1_b = numpy_to_torch(weights[f"{root}/MlpBlock_3/Dense_0/bias"]).t()
+                        fc2_w = numpy_to_torch(weights[f"{root}/MlpBlock_3/Dense_1/kernel"]).t()
+                        fc2_b = numpy_to_torch(weights[f"{root}/MlpBlock_3/Dense_1/bias"]).t()
+                        block.ffn[0].weight.copy_(fc1_w)
+                        block.ffn[0].bias.copy_(fc1_b)
+                        block.ffn[3].weight.copy_(fc2_w)
+                        block.ffn[3].bias.copy_(fc2_b)
+                        
+                        # LayerNorms
+                        attn_norm_w = numpy_to_torch(weights[f"{root}/LayerNorm_0/scale"])  # attention_norm
+                        attn_norm_b = numpy_to_torch(weights[f"{root}/LayerNorm_0/bias"]) 
+                        ffn_norm_w = numpy_to_torch(weights[f"{root}/LayerNorm_2/scale"])   # ffn_norm
+                        ffn_norm_b = numpy_to_torch(weights[f"{root}/LayerNorm_2/bias"]) 
+                        block.norm1.weight.copy_(attn_norm_w)
+                        block.norm1.bias.copy_(attn_norm_b)
+                        block.norm2.weight.copy_(ffn_norm_w)
+                        block.norm2.bias.copy_(ffn_norm_b)
+                    except KeyError:
+                        # Stop if fewer blocks in checkpoint
+                        break
         elif checkpoint_path.endswith('.pth'):
             # Load from PyTorch format
             checkpoint = torch.load(checkpoint_path, map_location='cpu')

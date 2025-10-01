@@ -54,6 +54,7 @@ class ReIDConfig:
     
     # Training hyperparameters (from paper)
     batch_size: int = 64
+    gradient_accumulation_steps: int = 1  # No accumulation by default (paper uses full batch size)
     images_per_id: int = 4       # 4 images per ID in each batch
     num_epochs: int = 120
     learning_rate: float = 0.008

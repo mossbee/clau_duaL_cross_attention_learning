@@ -52,11 +52,8 @@ class FGVCConfig:
     share_pwca_weights: bool = True  # PWCA shares weights with SA
     
     # Training hyperparameters (from paper)
-    batch_size: int = 6  # Physical batch size due to memory constraints
-    effective_batch_size: int = 16  # Target effective batch size from paper
-    gradient_accumulation_steps: int = 3  # Will give effective batch size of 18 (6*3)
-    # NOTE: For exact batch size 16, use batch_size=8 with gradient_accumulation_steps=2
-    # or batch_size=4 with gradient_accumulation_steps=4
+    batch_size: int = 8  # Physical batch size (adjust based on GPU memory)
+    gradient_accumulation_steps: int = 2  # Accumulate gradients over 2 steps
     num_epochs: int = 100
     learning_rate: float = 5e-4  # Will be scaled: lr * effective_batch_size / 512
     weight_decay: float = 0.05
@@ -78,7 +75,8 @@ class FGVCConfig:
     save_frequency: int = 10
     
     # Pretrained model
-    pretrained_model: Optional[str] = None  # Path to pretrained ViT
+    pretrained_model: Optional[str] = "/kaggle/input/cub-200-2011/ViT-B_16.npz"  # Path to pretrained ViT (required for reproduction)
+    require_pretrained: bool = True  # Enforce pretrained weights per paper for fair reproduction
     freeze_backbone: bool = False
     
     # Hardware settings
@@ -94,7 +92,11 @@ class FGVCConfig:
     
     def __post_init__(self):
         """Post-initialization processing"""
+        # Calculate effective batch size from physical batch size and gradient accumulation
+        self.effective_batch_size = self.batch_size * self.gradient_accumulation_steps
+        
         # Scale learning rate based on effective batch size as in paper
+        # Paper formula: lr_scaled = 5e-4 / 512 * batch_size
         self.scaled_lr = self.learning_rate * self.effective_batch_size / 512
         
         # Calculate sequence length for patch embeddings
@@ -146,7 +148,7 @@ class CUBConfig(FGVCConfig):
     num_classes: int = 200
     
     # Dataset paths (to be set by user)
-    data_root: str = "/path/to/CUB_200_2011"
+    data_root: str = "/kaggle/input/cub-200-2011"
     
     # CUB-specific settings
     use_bounding_box: bool = False  # Whether to use provided bounding boxes

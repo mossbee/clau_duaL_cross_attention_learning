@@ -117,6 +117,11 @@ class MultiHeadSelfAttention(nn.Module):
         # Scaled dot-product attention
         attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, num_heads, N, N]
         attn_weights = attn.softmax(dim=-1)
+        
+        # Store clean attention weights for rollout (before dropout)
+        attn_weights_clean = attn_weights
+        
+        # Apply dropout for training
         attn_weights = self.attn_dropout(attn_weights)
         
         # Apply attention to values
@@ -124,7 +129,8 @@ class MultiHeadSelfAttention(nn.Module):
         x = self.proj(x)
         x = self.proj_dropout(x)
         
-        return x, attn_weights
+        # Return clean weights for attention rollout computation
+        return x, attn_weights_clean
 
 
 class FeedForward(nn.Module):
