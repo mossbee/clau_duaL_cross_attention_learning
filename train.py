@@ -348,11 +348,12 @@ class DualCrossAttentionTrainer:
             else:
                 total_loss.backward()
             
-            # Update metrics (scale loss back for logging)
+            # Update metrics (loss_dict already contains correct per-batch values)
+            # Note: We scaled total_loss for gradient accumulation, but loss_dict values
+            # are kept at their original scale for accurate logging
             batch_size = images.size(0)
-            scaled_loss_dict = {k: v / accumulation_steps for k, v in loss_dict.items()}
             self.metrics_tracker.update(
-                {**scaled_loss_dict, **metrics_dict}, 
+                {**loss_dict, **metrics_dict}, 
                 batch_size
             )
             

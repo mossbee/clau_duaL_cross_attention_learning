@@ -151,27 +151,36 @@ class GlobalLocalCrossAttention(nn.Module):
         """
         Select top-k queries based on attention rollout scores.
         
+        IMPORTANT: CLS token must be included in GLCA queries so it can aggregate
+        information from high-response regions for classification. Without this,
+        GLCA cannot contribute to the final prediction.
+        
         Args:
             queries: All query vectors Q [B, N, embed_dim]
             rollout_scores: Attention rollout scores for patch selection [B, N-1]
             
         Returns:
-            local_queries: Selected query vectors Q^l with highest responses
-            selected_indices: Indices of selected patches
+            local_queries: Selected query vectors Q^l with CLS + highest response patches
+            selected_indices: Indices of selected patches (CLS=0 is always first)
         """
         B, N, C = queries.shape
-        num_patches = N - 1  # Exclude CLS token
+        num_patches = N - 1  # Exclude CLS token from patch selection
         num_selected = max(1, int(num_patches * self.top_k_ratio))
         
-        # Get top-k indices based on rollout scores
-        _, selected_indices = torch.topk(rollout_scores, num_selected, dim=-1)  # [B, num_selected]
+        # Get top-k patch indices based on rollout scores
+        _, patch_indices = torch.topk(rollout_scores, num_selected, dim=-1)  # [B, num_selected]
         
         # Add 1 to indices to account for CLS token at position 0
-        selected_indices = selected_indices + 1  # [B, num_selected]
+        patch_indices = patch_indices + 1  # [B, num_selected]
         
-        # Select corresponding queries
-        batch_indices = torch.arange(B, device=queries.device).unsqueeze(1).expand(-1, num_selected)
-        local_queries = queries[batch_indices, selected_indices]  # [B, num_selected, C]
+        # CRITICAL FIX: Include CLS token (position 0) as first query
+        # Shape: [B, 1 + num_selected]
+        cls_index = torch.zeros(B, 1, dtype=torch.long, device=queries.device)
+        selected_indices = torch.cat([cls_index, patch_indices], dim=1)
+        
+        # Select corresponding queries: CLS + top-R patches
+        batch_indices = torch.arange(B, device=queries.device).unsqueeze(1).expand(-1, num_selected + 1)
+        local_queries = queries[batch_indices, selected_indices]  # [B, 1+num_selected, C]
         
         return local_queries, selected_indices
     
@@ -207,10 +216,10 @@ class GlobalLocalCrossAttention(nn.Module):
         out = self.proj_dropout(out)
         
         # Create full output by placing local results back
+        # CRITICAL FIX: Now selected_indices includes CLS (index 0) as first element
         output = torch.zeros_like(x)
-        output[:, 0] = x[:, 0]  # Keep CLS token unchanged
         
-        # Place local attention results back to their positions
+        # Place local attention results (including updated CLS token) back to their positions
         batch_indices = torch.arange(B, device=x.device).unsqueeze(1).expand(-1, num_selected)
         # Ensure dtype compatibility for mixed precision training
         output[batch_indices, selected_indices] = out.to(output.dtype)
@@ -218,9 +227,8 @@ class GlobalLocalCrossAttention(nn.Module):
         # Keep non-selected patches unchanged (per-batch mask)
         # Create a mask for all positions [B, N]
         all_mask = torch.ones(B, N, dtype=torch.bool, device=x.device)
-        all_mask[:, 0] = False  # Exclude CLS token (already handled)
         
-        # Mark selected indices as False (already processed)
+        # Mark selected indices (including CLS) as False (already processed)
         all_mask[batch_indices, selected_indices] = False
         
         # Copy non-selected patches from input
