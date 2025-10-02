@@ -1,0 +1,111 @@
+Setting up training components...
+Loading pretrained weights from /kaggle/input/cub-200-2011/ViT-B_16.npz
+Model initialized with 100.73M parameters
+CUB Dataset: 5994 train samples loaded
+CUB Dataset: 5794 test samples loaded
+Starting training for 100 epochs
+Training samples: 5994
+Validation samples: 5794
+Physical batch size: 8
+Gradient accumulation steps: 2
+Effective batch size: 16
+Epoch 1: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=7.8396, sa_acc=0.020, glc
+Current LR: 0.000016
+Epoch 2: 100%|█| 749/749 [16:25<00:00,  1.32s/it, loss=7.1980, sa_acc=0.116, glc
+Current LR: 0.000016
+Epoch 3: 100%|█| 749/749 [16:25<00:00,  1.32s/it, loss=6.4406, sa_acc=0.289, glc
+Current LR: 0.000016
+Epoch 4: 100%|█| 749/749 [16:25<00:00,  1.32s/it, loss=5.7799, sa_acc=0.399, glc
+Current LR: 0.000016
+Epoch 5: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=5.1626, sa_acc=0.471, glc
+Current LR: 0.000016
+Evaluating val: 100%|█████████████████████████| 725/725 [03:50<00:00,  3.15it/s]
+Epoch 5/100
+Train Loss: 5.1483
+Val Metric: 61.0114 (Best: 61.0114 @ epoch 5)
+New best model saved with metric: 61.0114
+Epoch 6: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=4.7154, sa_acc=0.492, glc
+Current LR: 0.000015
+Epoch 7: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=4.4573, sa_acc=0.487, glc
+Current LR: 0.000015
+Epoch 8: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=4.3482, sa_acc=0.466, glc
+Current LR: 0.000015
+Epoch 9: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=4.3231, sa_acc=0.441, glc
+Current LR: 0.000015
+Epoch 10: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=4.3564, sa_acc=0.411, gl
+Current LR: 0.000015
+Evaluating val: 100%|█████████████████████████| 725/725 [03:50<00:00,  3.14it/s]
+Epoch 10/100
+Train Loss: 4.3632
+Val Metric: 42.1298 (Best: 61.0114 @ epoch 5)
+Epoch 11: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=4.4812, sa_acc=0.364, gl
+Current LR: 0.000015
+Epoch 12: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=4.5492, sa_acc=0.341, gl
+Current LR: 0.000015
+Epoch 13: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=4.6691, sa_acc=0.314, gl
+Current LR: 0.000015
+Epoch 14: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=4.7535, sa_acc=0.280, gl
+Current LR: 0.000015
+Epoch 15: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=4.9149, sa_acc=0.249, gl
+Current LR: 0.000015
+Evaluating val: 100%|█████████████████████████| 725/725 [03:50<00:00,  3.14it/s]
+Epoch 15/100
+Train Loss: 4.9214
+Val Metric: 23.8868 (Best: 61.0114 @ epoch 5)
+Epoch 16: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=5.0105, sa_acc=0.227, gl
+Current LR: 0.000015
+Epoch 17: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.0978, sa_acc=0.211, gl
+Current LR: 0.000015
+Epoch 18: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.2039, sa_acc=0.183, gl
+Current LR: 0.000014
+Epoch 19: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.2652, sa_acc=0.174, gl
+Current LR: 0.000014
+Epoch 20: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.3542, sa_acc=0.154, gl
+Current LR: 0.000014
+Evaluating val: 100%|█████████████████████████| 725/725 [03:51<00:00,  3.14it/s]
+Epoch 20/100
+Train Loss: 5.3607
+Val Metric: 16.0166 (Best: 61.0114 @ epoch 5)
+Epoch 21: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=5.3819, sa_acc=0.157, gl
+Current LR: 0.000014
+Epoch 22:  99%|▉| 739/749 [16:13<00:12,  1.23s/it, loss=5.4295, sa_acc=0.144, gl
+Current LR: 0.000014
+Epoch 23: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.4715, sa_acc=0.145, gl
+Current LR: 0.000014
+Epoch 24: 100%|█| 749/749 [16:28<00:00,  1.32s/it, loss=5.4965, sa_acc=0.131, gl
+Current LR: 0.000014
+Epoch 25: 100%|█| 749/749 [16:28<00:00,  1.32s/it, loss=5.5162, sa_acc=0.129, gl
+Current LR: 0.000013
+Evaluating val: 100%|█████████████████████████| 725/725 [03:51<00:00,  3.13it/s]
+Epoch 25/100
+Train Loss: 5.5180
+Val Metric: 11.7708 (Best: 61.0114 @ epoch 5)
+Epoch 26: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.5417, sa_acc=0.126, gl
+Current LR: 0.000013
+Epoch 27: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.5486, sa_acc=0.123, gl
+Current LR: 0.000013
+Epoch 28: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.5523, sa_acc=0.118, gl
+Current LR: 0.000013
+Epoch 29: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.5802, sa_acc=0.116, gl
+Current LR: 0.000013
+Epoch 30: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.5876, sa_acc=0.113, gl
+Current LR: 0.000013
+Evaluating val: 100%|█████████████████████████| 725/725 [03:51<00:00,  3.13it/s]
+Epoch 30/100
+Train Loss: 5.5833
+Val Metric: 10.5627 (Best: 61.0114 @ epoch 5)
+Epoch 31: 100%|█| 749/749 [16:26<00:00,  1.32s/it, loss=5.5621, sa_acc=0.114, gl
+Current LR: 0.000012
+Epoch 32: 100%|█| 749/749 [16:27<00:00,  1.32s/it, loss=5.5640, sa_acc=0.110, gl
+Current LR: 0.000012
+Epoch 33: 100%|█| 749/749 [16:28<00:00,  1.32s/it, loss=5.5612, sa_acc=0.109, gl
+Current LR: 0.000012
+Epoch 34: 100%|█| 749/749 [16:28<00:00,  1.32s/it, loss=5.5595, sa_acc=0.111, gl
+Current LR: 0.000012
+Epoch 35: 100%|█| 749/749 [16:28<00:00,  1.32s/it, loss=5.5468, sa_acc=0.104, gl
+Current LR: 0.000012
+Evaluating val: 100%|█████████████████████████| 725/725 [03:51<00:00,  3.13it/s]
+Epoch 35/100
+Train Loss: 5.5451
+Val Metric: 9.3545 (Best: 61.0114 @ epoch 5)
+Epoch 36:  93%|▉| 700/749 [15:22<01:08,  1.40s/it, loss=5.5373, sa_acc=0.110, gl

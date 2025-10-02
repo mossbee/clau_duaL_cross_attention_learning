@@ -261,6 +261,82 @@ class DualCrossAttentionTrainer:
         
         return optimizer, scheduler
     
+    def _compute_gradient_norm(self, model: nn.Module) -> float:
+        """Compute global gradient norm for monitoring gradient health"""
+        total_norm = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        return total_norm
+    
+    def _compute_weight_norm(self, model: nn.Module) -> Dict[str, float]:
+        """Compute weight norms for different modules to detect divergence"""
+        norms = {}
+        
+        # SA/PWCA blocks
+        for i, block in enumerate(model.sa_pwca_blocks):
+            block_norm = sum(p.norm().item() for p in block.parameters())
+            norms[f'sa_pwca_block_{i}'] = block_norm
+        
+        # GLCA blocks
+        for i, block in enumerate(model.glca_blocks):
+            block_norm = sum(p.norm().item() for p in block.parameters())
+            norms[f'glca_block_{i}'] = block_norm
+        
+        # Classification heads
+        norms['sa_head'] = sum(p.norm().item() for p in model.sa_head.parameters())
+        if model.glca_head is not None:
+            norms['glca_head'] = sum(p.norm().item() for p in model.glca_head.parameters())
+        
+        return norms
+    
+    def _compute_activation_stats(self, features: torch.Tensor, name: str) -> Dict[str, float]:
+        """Compute statistics of activations to detect saturation or dead neurons"""
+        with torch.no_grad():
+            return {
+                f'{name}_mean': features.mean().item(),
+                f'{name}_std': features.std().item(),
+                f'{name}_min': features.min().item(),
+                f'{name}_max': features.max().item(),
+                f'{name}_abs_mean': features.abs().mean().item()
+            }
+    
+    def _compute_attention_stats(self, model: nn.Module) -> Dict[str, float]:
+        """Compute attention statistics to detect attention collapse or issues"""
+        stats = {}
+        
+        if not hasattr(model, 'attention_maps') or not model.attention_maps:
+            return stats
+        
+        with torch.no_grad():
+            # SA attention statistics
+            if 'sa_attention' in model.attention_maps:
+                sa_attns = model.attention_maps['sa_attention']
+                if sa_attns:
+                    # Take the last layer's attention for analysis
+                    last_attn = sa_attns[-1]  # [B, num_heads, seq_len, seq_len]
+                    
+                    # CLS token attention (how much CLS attends to patches)
+                    cls_attn = last_attn[:, :, 0, 1:]  # [B, num_heads, num_patches]
+                    stats['attention/sa_cls_mean'] = cls_attn.mean().item()
+                    stats['attention/sa_cls_std'] = cls_attn.std().item()
+                    stats['attention/sa_cls_max'] = cls_attn.max().item()
+                    
+                    # Attention entropy (detect collapse to single token)
+                    attn_probs = last_attn.flatten(0, 1)  # [B*num_heads, seq_len, seq_len]
+                    entropy = -(attn_probs * torch.log(attn_probs + 1e-9)).sum(dim=-1).mean()
+                    stats['attention/sa_entropy'] = entropy.item()
+                    
+                    # Attention sparsity (how concentrated is attention)
+                    # Count effective number of tokens attended to
+                    threshold = 0.1 / last_attn.size(-1)  # 10% of uniform
+                    sparsity = (last_attn > threshold).float().mean()
+                    stats['attention/sa_sparsity'] = sparsity.item()
+        
+        return stats
+    
     def train_epoch(self, model: nn.Module, train_loader: DataLoader,
                    criterion: nn.Module, optimizer: optim.Optimizer,
                    epoch: int) -> Dict[str, float]:
@@ -357,8 +433,12 @@ class DualCrossAttentionTrainer:
                 batch_size
             )
             
-            # Optimizer step after accumulating gradients
+            # Compute gradient norm before optimizer step (for monitoring)
+            grad_norm = None
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
+                # Compute gradient norm before clipping/stepping
+                grad_norm = self._compute_gradient_norm(model)
+                
                 if self.scaler:
                     self.scaler.step(optimizer)
                     self.scaler.update()
@@ -375,22 +455,61 @@ class DualCrossAttentionTrainer:
                     'glca_acc': f"{current_metrics.get('glca_acc', 0):.3f}",
                     'eff_bs': effective_batch_size
                 })
-            # Add uncertainty weights to wandb every log_frequency steps
+            
+            # Enhanced wandb logging every log_frequency steps
             if batch_idx % self.config.log_frequency == 0 and self.wandb_project:
                 import wandb
                 current_metrics = self.metrics_tracker.get_current_metrics()
-                wandb.log({
+                
+                # Basic metrics
+                log_dict = {
                     "step": epoch * len(train_loader) + batch_idx,
+                    "epoch": epoch,
+                    
+                    # Uncertainty weights
                     "uncertainty/w1": current_metrics.get('w1', 0),
                     "uncertainty/w2": current_metrics.get('w2', 0),
                     "uncertainty/w3": current_metrics.get('w3', 0),
                     "uncertainty/weight_sa": current_metrics.get('weight_sa', 0),
                     "uncertainty/weight_glca": current_metrics.get('weight_glca', 0),
                     "uncertainty/weight_pwca": current_metrics.get('weight_pwca', 0),
+                    
+                    # Loss components
+                    "losses/total_loss": current_metrics.get('total_loss', 0),
                     "losses/sa_loss": current_metrics.get('sa_loss', 0),
                     "losses/glca_loss": current_metrics.get('glca_loss', 0),
-                    "losses/pwca_loss": current_metrics.get('pwca_loss', 0)
-                })
+                    "losses/pwca_loss": current_metrics.get('pwca_loss', 0),
+                    
+                    # Accuracies
+                    "train/sa_acc": current_metrics.get('sa_acc', 0),
+                    "train/glca_acc": current_metrics.get('glca_acc', 0),
+                    "train/pwca_acc": current_metrics.get('pwca_acc', 0),
+                    
+                    # Gradient health
+                    "gradients/global_norm": grad_norm if grad_norm is not None else 0,
+                }
+                
+                # Feature activation statistics (detect saturation/dead neurons)
+                if 'sa_logits' in outputs:
+                    log_dict.update(self._compute_activation_stats(outputs['sa_logits'], 'activations/sa_logits'))
+                if 'glca_logits' in outputs:
+                    log_dict.update(self._compute_activation_stats(outputs['glca_logits'], 'activations/glca_logits'))
+                if 'sa_features' in outputs:
+                    log_dict.update(self._compute_activation_stats(outputs['sa_features'], 'activations/sa_features'))
+                if 'glca_features' in outputs:
+                    log_dict.update(self._compute_activation_stats(outputs['glca_features'], 'activations/glca_features'))
+                
+                # Batch statistics
+                log_dict['batch/mean'] = images.mean().item()
+                log_dict['batch/std'] = images.std().item()
+                log_dict['batch/size'] = images.size(0)
+                
+                # Attention statistics (every 10x log_frequency for efficiency)
+                if batch_idx % (self.config.log_frequency * 10) == 0:
+                    attention_stats = self._compute_attention_stats(model)
+                    log_dict.update(attention_stats)
+                
+                wandb.log(log_dict)
         
         return self.metrics_tracker.get_current_metrics()
     
@@ -613,9 +732,13 @@ class DualCrossAttentionTrainer:
             # Training phase
             train_metrics = self.train_epoch(model, train_loader, criterion, optimizer, epoch)
             
+            # Compute weight norms for all modules (detect divergence)
+            weight_norms = self._compute_weight_norm(model)
+            
             # Update learning rate
+            current_lr = scheduler.get_last_lr()[0]
             scheduler.step()
-            print(f"Current LR: {scheduler.get_last_lr()[0]:.6f}")
+            print(f"Current LR: {current_lr:.6f}")
             
             # Evaluation phase
             if epoch % self.config.eval_frequency == 0 or epoch == self.config.num_epochs:
@@ -634,26 +757,66 @@ class DualCrossAttentionTrainer:
                 print(f"Train Loss: {train_metrics['total_loss']:.4f}")
                 print(f"Val Metric: {current_metric:.4f} (Best: {self.best_metric:.4f} @ epoch {self.best_epoch})")
                 
-                # Log to wandb
+                # Enhanced wandb logging at epoch level
                 if self.wandb_project:
                     import wandb
-                    wandb.log({
+                    
+                    epoch_log = {
                         "epoch": epoch,
-                        "learning_rate": scheduler.get_last_lr()[0],
+                        "learning_rate": current_lr,
+                        
+                        # Training metrics
                         **{f"train/{k}": v for k, v in train_metrics.items()},
+                        
+                        # Validation metrics
                         **{f"val/{k}": v for k, v in val_metrics.items()},
-                        # Add uncertainty weights monitoring
-                        "uncertainty/w1": train_metrics.get('w1', 0),
-                        "uncertainty/w2": train_metrics.get('w2', 0), 
-                        "uncertainty/w3": train_metrics.get('w3', 0),
-                        "uncertainty/weight_sa": train_metrics.get('weight_sa', 0),
-                        "uncertainty/weight_glca": train_metrics.get('weight_glca', 0),
-                        "uncertainty/weight_pwca": train_metrics.get('weight_pwca', 0),
-                        # Add individual loss components
-                        "losses/sa_loss": train_metrics.get('sa_loss', 0),
-                        "losses/glca_loss": train_metrics.get('glca_loss', 0),
-                        "losses/pwca_loss": train_metrics.get('pwca_loss', 0)
-                    })
+                        
+                        # Uncertainty weights
+                        "epoch_uncertainty/w1": train_metrics.get('w1', 0),
+                        "epoch_uncertainty/w2": train_metrics.get('w2', 0), 
+                        "epoch_uncertainty/w3": train_metrics.get('w3', 0),
+                        "epoch_uncertainty/weight_sa": train_metrics.get('weight_sa', 0),
+                        "epoch_uncertainty/weight_glca": train_metrics.get('weight_glca', 0),
+                        "epoch_uncertainty/weight_pwca": train_metrics.get('weight_pwca', 0),
+                        
+                        # Individual loss components
+                        "epoch_losses/total_loss": train_metrics.get('total_loss', 0),
+                        "epoch_losses/sa_loss": train_metrics.get('sa_loss', 0),
+                        "epoch_losses/glca_loss": train_metrics.get('glca_loss', 0),
+                        "epoch_losses/pwca_loss": train_metrics.get('pwca_loss', 0),
+                        
+                        # Performance metrics
+                        "performance/train_val_gap": train_metrics.get('sa_acc', 0) - current_metric,
+                        "performance/best_val_metric": self.best_metric,
+                        "performance/epochs_since_best": epoch - self.best_epoch,
+                        
+                        # Training health indicators
+                        "health/sa_glca_acc_diff": abs(train_metrics.get('sa_acc', 0) - train_metrics.get('glca_acc', 0)),
+                        "health/loss_ratio_sa_glca": train_metrics.get('sa_loss', 1) / max(train_metrics.get('glca_loss', 1), 1e-6),
+                    }
+                    
+                    # Weight norms per block (averaged for readability)
+                    sa_pwca_norms = [v for k, v in weight_norms.items() if 'sa_pwca_block' in k]
+                    glca_norms = [v for k, v in weight_norms.items() if 'glca_block' in k]
+                    
+                    if sa_pwca_norms:
+                        epoch_log['weight_norms/sa_pwca_avg'] = sum(sa_pwca_norms) / len(sa_pwca_norms)
+                        epoch_log['weight_norms/sa_pwca_max'] = max(sa_pwca_norms)
+                        epoch_log['weight_norms/sa_pwca_min'] = min(sa_pwca_norms)
+                    
+                    if glca_norms:
+                        epoch_log['weight_norms/glca_avg'] = sum(glca_norms) / len(glca_norms)
+                    
+                    epoch_log['weight_norms/sa_head'] = weight_norms.get('sa_head', 0)
+                    if 'glca_head' in weight_norms:
+                        epoch_log['weight_norms/glca_head'] = weight_norms.get('glca_head', 0)
+                    
+                    # Memory usage (if CUDA available)
+                    if torch.cuda.is_available():
+                        epoch_log['system/gpu_memory_allocated_gb'] = torch.cuda.memory_allocated() / 1e9
+                        epoch_log['system/gpu_memory_reserved_gb'] = torch.cuda.memory_reserved() / 1e9
+                    
+                    wandb.log(epoch_log)
                 
                 # Save checkpoint
                 self.save_checkpoint(model, optimizer, scheduler, epoch, val_metrics, is_best)

@@ -12,7 +12,7 @@ def filter_lines_with_100_percent(input_path: Path, output_path: Path) -> int:
         "w", encoding="utf-8"
     ) as outfile:
         for line in infile:
-            if "100%" in line:
+            if "100%" in line or "Current" in line or "Evaluating val: 100%" in line or "/100" in line or "Train Loss" in line or "Val Metric" in line or "New best model saved with metric" in line:
                 outfile.write(line)
                 lines_written += 1
     return lines_written

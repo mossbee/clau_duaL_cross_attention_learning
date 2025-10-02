@@ -392,12 +392,20 @@ class DualCrossAttentionViT(nn.Module):
         
         # SA/PWCA branch - L=12, T=12 blocks with SHARED weights
         # Per paper: "The PWCA branch shares weights with the SA branch"
+        # 
+        # IMPORTANT DESIGN DECISION:
+        # x_pair stays as initial patch embeddings throughout all layers.
+        # At each layer, PWCA applies QKV projections to both x_target and x_pair using shared SA weights.
+        # This means x_pair provides "distractor" K/V at each layer without accumulating residuals.
+        # The target image evolves through layers, but the paired image acts as a static distractor
+        # that gets projected differently at each layer but doesn't have its own residual path.
         sa_attention_history = []
         sa_x = x.clone()
         pwca_x = x.clone() if (x_pair is not None and self.training) else None
         
         for block in self.sa_pwca_blocks:
             # Process both SA and PWCA through the SAME block (shared weights)
+            # x_pair is passed as-is (initial embeddings) and will be projected by PWCA's QKV
             block_outputs = block(sa_x, x_pair=x_pair if self.training else None)
             
             # Update SA branch

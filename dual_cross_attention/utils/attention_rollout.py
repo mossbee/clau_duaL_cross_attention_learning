@@ -76,23 +76,33 @@ class AttentionRollout:
         with torch.no_grad():
             for attention in attentions:
                 # Fuse attention heads using specified method
-                attention_heads_fused = self.fuse_attention_heads(attention)
+                attention_heads_fused = self.fuse_attention_heads(attention)  # [B, seq_len, seq_len]
                 
                 # Drop the lowest attentions, but don't drop the class token
-                # Based on vit_rollout.py logic: discard lowest attention values but keep class token
-                flat = attention_heads_fused.view(B, seq_len, -1)
+                # Based on vit_rollout.py lines 22-27
+                # The reference flattens attention and discards lowest values globally
+                # But has a bug at line 26-27 where it only processes batch 0
+                # We fix this to work with batches correctly
+                
+                # Flatten attention matrix and find lowest attention values
+                flat = attention_heads_fused.view(B, -1)  # [B, seq_len*seq_len]
                 _, indices = flat.topk(int(flat.size(-1) * self.discard_ratio), dim=-1, largest=False)
                 
-                # Create mask and zero out lowest attentions
-                # Don't discard attention to class token (position 0 in each sequence)
-                mask = torch.ones_like(flat)
-                mask.scatter_(-1, indices, 0)
-                
-                # Ensure class token column is always kept (position 0)
-                mask[:, :, 0] = 1
-                
-                # Reshape mask back and apply
-                attention_heads_fused = attention_heads_fused * mask.view_as(attention_heads_fused)
+                # Zero out the lowest attention values for each batch
+                # Create a mask to efficiently zero multiple positions
+                for b in range(B):
+                    # Get flat indices to discard for this batch
+                    discard_flat_indices = indices[b]
+                    # Convert flat indices to 2D indices
+                    row_indices = discard_flat_indices // seq_len
+                    col_indices = discard_flat_indices % seq_len
+                    # Filter out positions in column 0 (attending TO CLS token)
+                    # Don't discard attention to CLS token as it's important
+                    mask = col_indices != 0
+                    row_indices = row_indices[mask]
+                    col_indices = col_indices[mask]
+                    # Zero out these positions
+                    attention_heads_fused[b, row_indices, col_indices] = 0
                 
                 # Add identity matrix for residual connections (S̄ = 0.5*S + 0.5*I)
                 # This accounts for residual connections in transformer: out = attn(x) + x

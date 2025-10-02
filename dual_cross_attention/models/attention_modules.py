@@ -151,9 +151,14 @@ class GlobalLocalCrossAttention(nn.Module):
         """
         Select top-k queries based on attention rollout scores.
         
-        IMPORTANT: CLS token must be included in GLCA queries so it can aggregate
-        information from high-response regions for classification. Without this,
-        GLCA cannot contribute to the final prediction.
+        IMPORTANT: Per the paper, we select "top R query vectors from Q_i that correspond to 
+        the top R highest responses". The paper's description focuses on patch selection,
+        suggesting we select ONLY the high-response patches, not necessarily including CLS.
+        
+        However, for classification, the CLS token must be able to attend to these regions.
+        Looking at the paper's implementation details and Figure 1, GLCA computes cross-attention
+        where local queries attend to global key-values. For the final classification to use
+        GLCA features, we need the CLS token to be updated through GLCA.
         
         Args:
             queries: All query vectors Q [B, N, embed_dim]
@@ -173,8 +178,8 @@ class GlobalLocalCrossAttention(nn.Module):
         # Add 1 to indices to account for CLS token at position 0
         patch_indices = patch_indices + 1  # [B, num_selected]
         
-        # CRITICAL FIX: Include CLS token (position 0) as first query
-        # Shape: [B, 1 + num_selected]
+        # Include CLS token (position 0) as first query
+        # This allows GLCA to update CLS token based on local discriminative regions
         cls_index = torch.zeros(B, 1, dtype=torch.long, device=queries.device)
         selected_indices = torch.cat([cls_index, patch_indices], dim=1)
         
@@ -215,24 +220,19 @@ class GlobalLocalCrossAttention(nn.Module):
         out = self.proj(out)
         out = self.proj_dropout(out)
         
-        # Create full output by placing local results back
-        # CRITICAL FIX: Now selected_indices includes CLS (index 0) as first element
+        # CRITICAL FIX: Return only the RESIDUAL, not full output
+        # The residual connection in dual_vit.py does: glca_out = x + glca_out
+        # So we need to return the CHANGE (delta), not x + delta
+        # For non-selected patches, the change should be zero (identity mapping)
+        # For selected patches, return the attention output as the residual
+        
+        # Create output as zeros (identity residual for non-selected patches)
         output = torch.zeros_like(x)
         
-        # Place local attention results (including updated CLS token) back to their positions
+        # Place local attention results back to their positions
+        # This is the RESIDUAL that will be added to x
         batch_indices = torch.arange(B, device=x.device).unsqueeze(1).expand(-1, num_selected)
-        # Ensure dtype compatibility for mixed precision training
         output[batch_indices, selected_indices] = out.to(output.dtype)
-        
-        # Keep non-selected patches unchanged (per-batch mask)
-        # Create a mask for all positions [B, N]
-        all_mask = torch.ones(B, N, dtype=torch.bool, device=x.device)
-        
-        # Mark selected indices (including CLS) as False (already processed)
-        all_mask[batch_indices, selected_indices] = False
-        
-        # Copy non-selected patches from input
-        output[all_mask] = x[all_mask]
         
         return output, attn_weights
 

@@ -25,11 +25,12 @@ class UncertaintyWeightedLoss(nn.Module):
     Implements the automatic loss balancing from Kendall et al. (2018) as used
     in the paper to balance SA, GLCA, and PWCA losses without manual tuning.
     
-    Loss formulation:
+    Loss formulation from the paper:
     L_total = 1/2 * (1/exp(w1) * L_SA + 1/exp(w2) * L_GLCA + 1/exp(w3) * L_PWCA + w1 + w2 + w3)
     
-    The learnable parameters w1, w2, w3 represent task uncertainties and are
-    optimized jointly with the model parameters to automatically balance losses.
+    CRITICAL: Although SA and PWCA share NETWORK weights (Q/K/V projections), they have
+    SEPARATE LOSS WEIGHTS (w1, w2, w3) in the uncertainty weighting formula. This allows
+    the model to automatically balance the contribution of each attention mechanism during training.
     
     Args:
         num_tasks: Number of tasks to balance (3 for SA, GLCA, PWCA)
@@ -45,38 +46,70 @@ class UncertaintyWeightedLoss(nn.Module):
         super().__init__()
         
         if init_values is None:
+            # Initialize to 0, which gives equal weight (1/e^0 = 1) to all tasks initially
             init_values = torch.zeros(num_tasks)
         
         self.log_vars = nn.Parameter(init_values)
         self.num_tasks = num_tasks
+        
+        # Clipping bounds to prevent unbounded growth
+        # Based on empirical stability: w in [-3, 3] gives weight range [0.05, 20]
+        self.min_log_var = -3.0
+        self.max_log_var = 3.0
     
     def forward(self, losses: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float], Dict[str, float]]:
         """
         Compute uncertainty-weighted total loss.
         
+        Per the paper's formula, each attention mechanism (SA, GLCA, PWCA) has its own
+        uncertainty weight (w1, w2, w3) that is learned during training to automatically
+        balance their contributions.
+        
         Args:
             losses: Dictionary with task losses
-                   Expected keys: "sa_loss", "glca_loss", "pwca_loss"
+                   Expected keys: "sa_loss", "glca_loss", "pwca_loss" (optional)
                    
         Returns:
             total_loss: Weighted combination of losses
             log_vars: Current log variance values (w1, w2, w3)
-            weights: Current task weights (1/exp(w1), etc.)
+            weights: Current task weights (1/exp(w1), 1/exp(w2), 1/exp(w3))
         """
-        loss_keys = ["sa_loss", "glca_loss", "pwca_loss"]
         total_loss = 0
         
-        for i, key in enumerate(loss_keys):
-            if key in losses:
-                precision = torch.exp(-self.log_vars[i])
-                total_loss += precision * losses[key] + self.log_vars[i]
+        # Clip log_vars to prevent unbounded growth and numerical instability
+        with torch.no_grad():
+            self.log_vars.clamp_(self.min_log_var, self.max_log_var)
         
+        # SA loss with w1
+        if "sa_loss" in losses:
+            precision_sa = torch.exp(-self.log_vars[0])
+            total_loss += precision_sa * losses["sa_loss"] + self.log_vars[0]
+        
+        # GLCA loss with w2
+        if "glca_loss" in losses and self.num_tasks >= 2:
+            precision_glca = torch.exp(-self.log_vars[1])
+            total_loss += precision_glca * losses["glca_loss"] + self.log_vars[1]
+        
+        # PWCA loss with w3
+        if "pwca_loss" in losses and self.num_tasks >= 3:
+            precision_pwca = torch.exp(-self.log_vars[2])
+            total_loss += precision_pwca * losses["pwca_loss"] + self.log_vars[2]
+        
+        # Apply the 1/2 factor from the paper's formula
         total_loss = 0.5 * total_loss
         
         # Get current values for monitoring
-        log_vars_dict = {f"w{i+1}": self.log_vars[i].item() for i in range(self.num_tasks)}
-        weights_dict = {f"weight_{loss_keys[i].split('_')[0]}": torch.exp(-self.log_vars[i]).item() 
-                       for i in range(self.num_tasks)}
+        log_vars_dict = {
+            "w1": self.log_vars[0].item(),
+            "w2": self.log_vars[1].item() if self.num_tasks >= 2 else 0.0,
+            "w3": self.log_vars[2].item() if self.num_tasks >= 3 else 0.0
+        }
+        
+        weights_dict = {
+            "weight_sa": torch.exp(-self.log_vars[0]).item(),
+            "weight_glca": torch.exp(-self.log_vars[1]).item() if self.num_tasks >= 2 else 1.0,
+            "weight_pwca": torch.exp(-self.log_vars[2]).item() if self.num_tasks >= 3 else 1.0
+        }
         
         return total_loss, log_vars_dict, weights_dict
     
@@ -323,6 +356,8 @@ class DualCrossAttentionLoss(nn.Module):
             self.triplet_loss = TripletLoss(margin=triplet_margin)
         
         # Uncertainty-based loss weighting
+        # Use 3 learnable weights: w1 for SA, w2 for GLCA, w3 for PWCA
+        # Per paper equation: L_total = 1/2 * (1/e^w1 * L_SA + 1/e^w2 * L_GLCA + 1/e^w3 * L_PWCA + w1 + w2 + w3)
         self.uncertainty_weighting = UncertaintyWeightedLoss(num_tasks=3)
     
     def forward(self, outputs: Dict[str, torch.Tensor], 
@@ -376,8 +411,12 @@ class DualCrossAttentionLoss(nn.Module):
         # Apply uncertainty-based weighting
         total_loss, log_vars, weights = self.uncertainty_weighting(individual_losses)
         
+        # Convert tensor losses to floats for logging (prevent computation graph issues)
+        loss_dict_floats = {k: v.item() if isinstance(v, torch.Tensor) else v 
+                           for k, v in individual_losses.items()}
+        
         # Combine loss and metrics dictionaries
-        loss_dict = {**individual_losses, **log_vars, **weights}
+        loss_dict = {**loss_dict_floats, **log_vars, **weights}
         loss_dict["total_loss"] = total_loss.item()
         
         return total_loss, loss_dict, metrics_dict
