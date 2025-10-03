@@ -483,8 +483,8 @@ class DualCrossAttentionViT(nn.Module):
             # Use SA-refined embeddings as input to GLCA for coordinated learning
             glca_x = sa_x.clone()
             
-            for block in self.glca_blocks:
-                block_outputs = block(glca_x, attention_history=sa_attention_history)
+            for glca_block in self.glca_blocks:
+                block_outputs = glca_block(glca_x, attention_history=sa_attention_history)
                 if 'glca_output' in block_outputs:
                     glca_x = block_outputs['glca_output']
             
