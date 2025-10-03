@@ -233,7 +233,8 @@ class GlobalLocalCrossAttention(nn.Module):
         # For selected patches, return the attention output as the residual
         
         # Create output as zeros (identity residual for non-selected patches)
-        output = torch.zeros_like(x)
+        # IMPORTANT: Use same dtype as out to avoid mixed precision issues
+        output = torch.zeros_like(x, dtype=out.dtype)
         
         # Place local attention results back to their positions
         # CRITICAL: Use proper 3D indexing to assign [B, num_selected, C] to specific positions
