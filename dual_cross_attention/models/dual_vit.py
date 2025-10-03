@@ -393,43 +393,50 @@ class DualCrossAttentionViT(nn.Module):
         # SA/PWCA branch - L=12, T=12 blocks with SHARED weights
         # Per paper: "The PWCA branch shares weights with the SA branch"
         # 
-        # CRITICAL FIX: Both target and paired images need to evolve through SA layers!
-        # PWCA shares weights with SA, meaning:
-        # 1. Both images go through the SAME SA transformations independently
-        # 2. PWCA then uses Q from target image and concatenates K,V from [target, paired]
-        # 3. This creates "contaminated" attention scores for regularization
+        # MEMORY-EFFICIENT IMPLEMENTATION (following paper exactly):
+        # Paper: "query, key and value vectors are separately computed for both images"
+        # Both images must evolve through SA at each layer, then PWCA uses:
+        #   Q from target, K,V concatenated from [target; paired]
         #
-        # The paired image MUST be evolved through layers, not kept as initial embeddings!
+        # OPTIMIZATION: Batch process both images' SA together at each layer
         sa_attention_history = []
         sa_x = x.clone()
         pwca_x = x.clone() if (x_pair is not None and self.training) else None
         
-        # Also evolve the paired image through SA layers (needed for PWCA K/V)
-        if x_pair is not None and self.training:
-            x_pair_evolved = x_pair.clone()
-        else:
-            x_pair_evolved = None
-        
         for block in self.sa_pwca_blocks:
-            # First, evolve paired image through SA if training with PWCA  
-            # This is CRITICAL: both images must evolve through the same SA transformations
-            if x_pair_evolved is not None:
-                # Process paired image through SA (same as target, but independently)
-                # Use the block's forward to ensure proper norm/dropout/residual handling
-                pair_block_outputs = block(x_pair_evolved, x_pair=None)  # No PWCA for the pair itself
-                x_pair_evolved = pair_block_outputs['sa_output']
-            
-            # Process target image through SA and PWCA (if training)
-            # Now x_pair_evolved contains properly evolved paired features for PWCA K/V
-            block_outputs = block(sa_x, x_pair=x_pair_evolved if self.training else None)
-            
-            # Update SA branch
-            sa_x = block_outputs['sa_output']
-            sa_attention_history.append(block_outputs['sa_weights'])
-            
-            # Update PWCA branch (training only)
-            if 'pwca_output' in block_outputs:
-                pwca_x = block_outputs['pwca_output']
+            if x_pair is not None and self.training:
+                # MEMORY-EFFICIENT: Batch both images together for SA computation
+                # This processes both through SA in one forward pass, saving memory
+                x_both = torch.cat([sa_x, x_pair], dim=0)  # [2B, N, C]
+                
+                # Apply SA to both images together (shares computation)
+                sa_out, sa_weights = block.sa(block.norm1(x_both))
+                
+                # Split results back
+                sa_out_target = sa_out[:B]
+                sa_out_paired = sa_out[B:]
+                
+                # Apply residual + FFN for target image (SA branch)
+                sa_x = sa_x + sa_out_target
+                sa_x = sa_x + block.ffn(block.norm2(sa_x))
+                
+                # Apply residual + FFN for paired image (needed for next layer's PWCA K/V)
+                x_pair = x_pair + sa_out_paired  
+                x_pair = x_pair + block.ffn(block.norm2(x_pair))
+                
+                # Store attention weights for rollout (only from target image)
+                sa_attention_history.append(sa_weights[:B])
+                
+                # Compute PWCA for target image using evolved paired features
+                # PWCA shares SA weights, so it uses the same Q/K/V projections
+                pwca_out, _ = block.pwca(block.norm1(pwca_x), block.norm1(x_pair))
+                pwca_x = pwca_x + pwca_out
+                pwca_x = pwca_x + block.ffn(block.norm2(pwca_x))
+            else:
+                # No PWCA training, just SA
+                block_outputs = block(sa_x, x_pair=None)
+                sa_x = block_outputs['sa_output']
+                sa_attention_history.append(block_outputs['sa_weights'])
         
         # SA branch output
         sa_features = self.norm(sa_x)[:, 0]  # CLS token
