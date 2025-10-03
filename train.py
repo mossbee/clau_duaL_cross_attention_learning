@@ -367,7 +367,8 @@ class DualCrossAttentionTrainer:
         # Gradient accumulation settings
         accumulation_steps = getattr(self.config, 'gradient_accumulation_steps', 1)
         
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+        # Use ncols to ensure full display of progress bar, or disable to allow dynamic resizing
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", ncols=120, ascii=True)
         
         for batch_idx, batch in enumerate(pbar):
             # Extract batch data
@@ -436,8 +437,20 @@ class DualCrossAttentionTrainer:
             # Compute gradient norm before optimizer step (for monitoring)
             grad_norm = None
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
-                # Compute gradient norm before clipping/stepping
-                grad_norm = self._compute_gradient_norm(model)
+                # CRITICAL: Clip gradients to prevent instability (as done in ViT-pytorch/train.py)
+                # The reference ViT implementation uses max_grad_norm=1.0
+                max_grad_norm = getattr(self.config, 'max_grad_norm', 1.0)
+                
+                if self.scaler:
+                    # Unscale gradients before clipping
+                    self.scaler.unscale_(optimizer)
+                
+                # Clip gradients
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                
+                # Also clip criterion (uncertainty weights) gradients
+                if hasattr(criterion, 'parameters'):
+                    torch.nn.utils.clip_grad_norm_(criterion.parameters(), max_grad_norm)
                 
                 if self.scaler:
                     self.scaler.step(optimizer)
@@ -445,15 +458,17 @@ class DualCrossAttentionTrainer:
                 else:
                     optimizer.step()
             
-            # Update progress bar
+            # Update progress bar with key metrics (compact to avoid truncation)
             if batch_idx % self.config.log_frequency == 0:
                 current_metrics = self.metrics_tracker.get_current_metrics()
-                effective_batch_size = images.size(0) * accumulation_steps
                 pbar.set_postfix({
-                    'loss': f"{current_metrics['total_loss']:.4f}",
-                    'sa_acc': f"{current_metrics.get('sa_acc', 0):.3f}",
-                    'glca_acc': f"{current_metrics.get('glca_acc', 0):.3f}",
-                    'eff_bs': effective_batch_size
+                    'L': f"{current_metrics['total_loss']:.3f}",
+                    'SA': f"{current_metrics.get('sa_acc', 0):.2f}",
+                    'GL': f"{current_metrics.get('glca_acc', 0):.2f}",
+                    'PW': f"{current_metrics.get('pwca_acc', 0):.2f}",
+                    'w1': f"{current_metrics.get('w1', 0):.1f}",
+                    'w2': f"{current_metrics.get('w2', 0):.1f}",
+                    'w3': f"{current_metrics.get('w3', 0):.1f}"
                 })
             
             # Enhanced wandb logging every log_frequency steps
@@ -548,7 +563,7 @@ class DualCrossAttentionTrainer:
         num_batches = 0
         
         with torch.no_grad():
-            for batch in tqdm(data_loader, desc=f"Evaluating {split}"):
+            for batch in tqdm(data_loader, desc=f"Evaluating {split}", ncols=100, ascii=True):
                 images = batch['images'].to(self.device)
                 labels = batch['labels'].to(self.device)
                 
@@ -590,7 +605,7 @@ class DualCrossAttentionTrainer:
         num_batches = 0
         
         with torch.no_grad():
-            for batch in tqdm(data_loader, desc=f"Extracting Re-ID features ({split})"):
+            for batch in tqdm(data_loader, desc=f"Extracting Re-ID features ({split})", ncols=100, ascii=True):
                 images = batch['images'].to(self.device)
                 labels = batch['labels'].to(self.device)
                 
@@ -738,7 +753,40 @@ class DualCrossAttentionTrainer:
             # Update learning rate
             current_lr = scheduler.get_last_lr()[0]
             scheduler.step()
-            print(f"Current LR: {current_lr:.6f}")
+            
+            # Print detailed training metrics after each epoch
+            print(f"\n{'='*80}")
+            print(f"EPOCH {epoch} SUMMARY")
+            print(f"{'='*80}")
+            print(f"Learning Rate: {current_lr:.6f}")
+            print(f"\nLoss Breakdown:")
+            print(f"  Total Loss:    {train_metrics.get('total_loss', 0):.4f}")
+            print(f"  SA Loss:       {train_metrics.get('sa_loss', 0):.4f}")
+            print(f"  GLCA Loss:     {train_metrics.get('glca_loss', 0):.4f}")
+            print(f"  PWCA Loss:     {train_metrics.get('pwca_loss', 0):.4f}")
+            print(f"\nAccuracy:")
+            print(f"  SA Acc:        {train_metrics.get('sa_acc', 0):.4f}")
+            print(f"  GLCA Acc:      {train_metrics.get('glca_acc', 0):.4f}")
+            print(f"  PWCA Acc:      {train_metrics.get('pwca_acc', 0):.4f}")
+            print(f"\nUncertainty Weights (raw w_i):")
+            print(f"  w1 (SA):       {train_metrics.get('w1', 0):.4f}")
+            print(f"  w2 (GLCA):     {train_metrics.get('w2', 0):.4f}")
+            print(f"  w3 (PWCA):     {train_metrics.get('w3', 0):.4f}")
+            print(f"\nEffective Loss Weights (1/exp(w_i)):")
+            print(f"  Weight SA:     {train_metrics.get('weight_sa', 0):.4f}")
+            print(f"  Weight GLCA:   {train_metrics.get('weight_glca', 0):.4f}")
+            print(f"  Weight PWCA:   {train_metrics.get('weight_pwca', 0):.4f}")
+            
+            # Check for training anomalies
+            if train_metrics.get('total_loss', 0) > 10.0:
+                print(f"\n⚠️  WARNING: Loss is very high ({train_metrics.get('total_loss', 0):.2f})!")
+            if train_metrics.get('sa_acc', 1) < 0.1:
+                print(f"\n⚠️  WARNING: SA accuracy is very low ({train_metrics.get('sa_acc', 0):.2%})!")
+            if epoch > 1 and train_metrics.get('sa_acc', 0) < 0.5 * getattr(self, 'prev_sa_acc', 1.0):
+                print(f"\n⚠️  WARNING: Accuracy dropped significantly from previous epoch!")
+            
+            self.prev_sa_acc = train_metrics.get('sa_acc', 0)
+            print(f"{'='*80}\n")
             
             # Evaluation phase
             if epoch % self.config.eval_frequency == 0 or epoch == self.config.num_epochs:

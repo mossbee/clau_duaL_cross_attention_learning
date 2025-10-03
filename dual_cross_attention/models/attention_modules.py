@@ -199,6 +199,12 @@ class GlobalLocalCrossAttention(nn.Module):
             # Fallback: use all patches if no attention history
             rollout_scores = torch.ones(B, N-1, device=x.device)
         
+        # CRITICAL: Add numerical stability checks
+        # Replace any NaN/Inf values with uniform scores to prevent crashes
+        if torch.isnan(rollout_scores).any() or torch.isinf(rollout_scores).any():
+            print("Warning: NaN/Inf detected in attention rollout, using uniform scores")
+            rollout_scores = torch.ones(B, N-1, device=x.device)
+        
         # Generate global K, V from full input
         k_global = self.k_proj(x).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v_global = self.v_proj(x).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
@@ -230,9 +236,10 @@ class GlobalLocalCrossAttention(nn.Module):
         output = torch.zeros_like(x)
         
         # Place local attention results back to their positions
-        # This is the RESIDUAL that will be added to x
-        batch_indices = torch.arange(B, device=x.device).unsqueeze(1).expand(-1, num_selected)
-        output[batch_indices, selected_indices] = out.to(output.dtype)
+        # CRITICAL: Use proper 3D indexing to assign [B, num_selected, C] to specific positions
+        # We need to scatter the results back to their original positions in the sequence
+        for b in range(B):
+            output[b, selected_indices[b]] = out[b]
         
         return output, attn_weights
 

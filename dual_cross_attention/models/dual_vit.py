@@ -393,20 +393,35 @@ class DualCrossAttentionViT(nn.Module):
         # SA/PWCA branch - L=12, T=12 blocks with SHARED weights
         # Per paper: "The PWCA branch shares weights with the SA branch"
         # 
-        # IMPORTANT DESIGN DECISION:
-        # x_pair stays as initial patch embeddings throughout all layers.
-        # At each layer, PWCA applies QKV projections to both x_target and x_pair using shared SA weights.
-        # This means x_pair provides "distractor" K/V at each layer without accumulating residuals.
-        # The target image evolves through layers, but the paired image acts as a static distractor
-        # that gets projected differently at each layer but doesn't have its own residual path.
+        # CRITICAL FIX: Both target and paired images need to evolve through SA layers!
+        # PWCA shares weights with SA, meaning:
+        # 1. Both images go through the SAME SA transformations independently
+        # 2. PWCA then uses Q from target image and concatenates K,V from [target, paired]
+        # 3. This creates "contaminated" attention scores for regularization
+        #
+        # The paired image MUST be evolved through layers, not kept as initial embeddings!
         sa_attention_history = []
         sa_x = x.clone()
         pwca_x = x.clone() if (x_pair is not None and self.training) else None
         
+        # Also evolve the paired image through SA layers (needed for PWCA K/V)
+        if x_pair is not None and self.training:
+            x_pair_evolved = x_pair.clone()
+        else:
+            x_pair_evolved = None
+        
         for block in self.sa_pwca_blocks:
-            # Process both SA and PWCA through the SAME block (shared weights)
-            # x_pair is passed as-is (initial embeddings) and will be projected by PWCA's QKV
-            block_outputs = block(sa_x, x_pair=x_pair if self.training else None)
+            # First, evolve paired image through SA if training with PWCA  
+            # This is CRITICAL: both images must evolve through the same SA transformations
+            if x_pair_evolved is not None:
+                # Process paired image through SA (same as target, but independently)
+                # Use the block's forward to ensure proper norm/dropout/residual handling
+                pair_block_outputs = block(x_pair_evolved, x_pair=None)  # No PWCA for the pair itself
+                x_pair_evolved = pair_block_outputs['sa_output']
+            
+            # Process target image through SA and PWCA (if training)
+            # Now x_pair_evolved contains properly evolved paired features for PWCA K/V
+            block_outputs = block(sa_x, x_pair=x_pair_evolved if self.training else None)
             
             # Update SA branch
             sa_x = block_outputs['sa_output']

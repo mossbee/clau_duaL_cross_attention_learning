@@ -60,6 +60,7 @@ class FGVCConfig:
     optimizer: str = "adam"
     lr_scheduler: str = "cosine"
     warmup_epochs: int = 5
+    max_grad_norm: float = 1.0  # Gradient clipping (from ViT-pytorch reference)
     
     # Loss settings
     use_uncertainty_weighting: bool = True
