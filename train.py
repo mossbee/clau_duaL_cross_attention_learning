@@ -98,7 +98,11 @@ class DualCrossAttentionTrainer:
         Returns:
             model: Initialized dual cross-attention model
         """
-        model = DualCrossAttentionViT(**self.config.get_model_config())
+        model_config = self.config.get_model_config()
+        # Add gradient checkpointing flag if available
+        if hasattr(self.config, 'use_gradient_checkpointing'):
+            model_config['use_gradient_checkpointing'] = self.config.use_gradient_checkpointing
+        model = DualCrossAttentionViT(**model_config)
         
         # Load pretrained weights if specified or discover common defaults
         pretrained_path = getattr(self.config, 'pretrained_model', None)
@@ -139,12 +143,19 @@ class DualCrossAttentionTrainer:
                 # Use new API if available (PyTorch 2.1+)
                 from torch.amp import GradScaler
                 self.scaler = GradScaler('cuda')
+                print("✓ Mixed precision training enabled (FP16)")
             except ImportError:
                 # Fallback to old API
                 from torch.cuda.amp import GradScaler
                 self.scaler = GradScaler()
+                print("✓ Mixed precision training enabled (FP16)")
         else:
             self.scaler = None
+            print("⚠ Mixed precision disabled - this will use more memory")
+        
+        # Print memory optimization settings
+        if hasattr(self.config, 'use_gradient_checkpointing') and self.config.use_gradient_checkpointing:
+            print("✓ Gradient checkpointing enabled (trades compute for memory)")
         
         print(f"Model initialized with {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters")
         return model
