@@ -77,7 +77,7 @@ class FGVCConfig:
     save_frequency: int = 10
     
     # Pretrained model
-    pretrained_model: Optional[str] = None  # Auto-detect ViT-B_16 weights if not supplied
+    pretrained_model: Optional[str] = "/kaggle/input/cub-200-2011/ViT-B_16.npz"  # Auto-detect ViT-B_16 weights if not supplied
     require_pretrained: bool = True  # Enforce pretrained weights per paper for fair reproduction
     freeze_backbone: bool = False
     
