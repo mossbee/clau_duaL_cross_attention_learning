@@ -18,6 +18,7 @@ from typing import Dict, Tuple, Optional, List
 import math
 
 from .vit_backbone import VisionTransformer, TransformerBlock, PatchEmbedding
+from ..utils.stochastic_depth import DropPath
 from .attention_modules import SelfAttention, GlobalLocalCrossAttention, PairWiseCrossAttention
 
 
@@ -48,7 +49,8 @@ class TransformerBlockWithPWCA(nn.Module):
     """
     
     def __init__(self, embed_dim: int = 768, num_heads: int = 12,
-                 hidden_dim: int = 3072, dropout: float = 0.1):
+                 hidden_dim: int = 3072, dropout: float = 0.1,
+                 drop_path_prob: float = 0.0):
         super().__init__()
         self.embed_dim = embed_dim
         
@@ -64,6 +66,10 @@ class TransformerBlockWithPWCA(nn.Module):
             nn.Dropout(dropout)
         )
         
+        # Stochastic depth for residual branches
+        self.drop_path1 = DropPath(drop_path_prob) if drop_path_prob > 0.0 else nn.Identity()
+        self.drop_path2 = DropPath(drop_path_prob) if drop_path_prob > 0.0 else nn.Identity()
+
         # PWCA uses the SAME SA module (weight sharing)
         self.pwca = PairWiseCrossAttention(self.sa, dropout)
     
@@ -82,8 +88,8 @@ class TransformerBlockWithPWCA(nn.Module):
         
         # Self-Attention branch
         sa_out, sa_weights = self.sa(self.norm1(x))
-        sa_out = x + sa_out
-        sa_out = sa_out + self.ffn(self.norm2(sa_out))
+        sa_out = x + self.drop_path1(sa_out)
+        sa_out = sa_out + self.drop_path2(self.ffn(self.norm2(sa_out)))
         
         outputs['sa_output'] = sa_out
         outputs['sa_weights'] = sa_weights
@@ -91,8 +97,8 @@ class TransformerBlockWithPWCA(nn.Module):
         # Pair-Wise Cross-Attention branch (training only, shares weights with SA)
         if x_pair is not None and self.training:
             pwca_out, pwca_weights = self.pwca(self.norm1(x), self.norm1(x_pair))
-            pwca_out = x + pwca_out
-            pwca_out = pwca_out + self.ffn(self.norm2(pwca_out))
+            pwca_out = x + self.drop_path1(pwca_out)
+            pwca_out = pwca_out + self.drop_path2(self.ffn(self.norm2(pwca_out)))
             
             outputs['pwca_output'] = pwca_out
             outputs['pwca_weights'] = pwca_weights
@@ -102,94 +108,48 @@ class TransformerBlockWithPWCA(nn.Module):
 
 class DualCrossAttentionBlock(nn.Module):
     """
-    Combined attention block containing SA, GLCA, and PWCA mechanisms.
-    
-    This block implements the coordinated learning of different attention types:
-    - Self-attention for baseline feature learning
-    - Global-local cross-attention for discriminative local features
-    - Pair-wise cross-attention for training regularization
-    
-    The block uses shared weights between SA and PWCA branches but separate
-    weights for GLCA as described in the paper.
-    
-    Args:
-        embed_dim: Embedding dimension
-        num_heads: Number of attention heads
-        hidden_dim: FFN hidden dimension
-        dropout: Dropout probability
-        top_k_ratio: Ratio for local query selection in GLCA
-        use_pwca: Whether to use PWCA (only during training)
-    
-    Returns:
-        sa_output: Self-attention features
-        glca_output: Global-local cross-attention features  
-        pwca_output: Pair-wise cross-attention features (if training)
-        attention_weights: Dictionary of attention weights for rollout
+    Global-Local Cross-Attention block operating on SA-refined features.
+
+    The paper routes SA features into the GLCA module without running another
+    self-attention stage. This block therefore performs only the global-local
+    cross-attention followed by its dedicated feed-forward network.
     """
-    
+
     def __init__(self, embed_dim: int = 768, num_heads: int = 12,
                  hidden_dim: int = 3072, dropout: float = 0.1,
-                 top_k_ratio: float = 0.1, use_pwca: bool = True):
+                 top_k_ratio: float = 0.1, drop_path_prob: float = 0.0):
         super().__init__()
         self.embed_dim = embed_dim
-        self.use_pwca = use_pwca
-        
-        # Self-Attention branch 
-        self.norm_sa = nn.LayerNorm(embed_dim)
-        self.sa = SelfAttention(embed_dim, num_heads, dropout)
-        self.norm_sa_ffn = nn.LayerNorm(embed_dim)
-        self.sa_ffn = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, embed_dim),
-            nn.Dropout(dropout)
-        )
-        
-        # Global-Local Cross-Attention branch (separate weights)
+
         self.norm_glca = nn.LayerNorm(embed_dim)
         self.glca = GlobalLocalCrossAttention(embed_dim, num_heads, dropout, top_k_ratio)
-        self.norm_glca_ffn = nn.LayerNorm(embed_dim)
-        self.glca_ffn = nn.Sequential(
+        self.norm_ffn = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, embed_dim),
             nn.Dropout(dropout)
         )
-        
-        # Pair-Wise Cross-Attention branch (shares weights with SA)
-        if use_pwca:
-            self.norm_pwca = nn.LayerNorm(embed_dim)
-            self.pwca = PairWiseCrossAttention(self.sa, dropout)
-    
-    def forward(self, x: torch.Tensor, x_pair: Optional[torch.Tensor] = None,
+
+        self.drop_path_attn = DropPath(drop_path_prob) if drop_path_prob > 0.0 else nn.Identity()
+        self.drop_path_ffn = DropPath(drop_path_prob) if drop_path_prob > 0.0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor,
                 attention_history: Optional[List[torch.Tensor]] = None) -> Dict[str, torch.Tensor]:
-        outputs = {}
-        
-        # Self-Attention branch
-        sa_out, sa_weights = self.sa(self.norm_sa(x))
-        sa_out = x + sa_out
-        sa_out = sa_out + self.sa_ffn(self.norm_sa_ffn(sa_out))
-        outputs['sa_output'] = sa_out
-        outputs['sa_weights'] = sa_weights
-        
-        # Global-Local Cross-Attention branch
-        if attention_history is not None:
-            glca_out, glca_weights = self.glca(self.norm_glca(x), attention_history)
-            glca_out = x + glca_out
-            glca_out = glca_out + self.glca_ffn(self.norm_glca_ffn(glca_out))
-            outputs['glca_output'] = glca_out
-            outputs['glca_weights'] = glca_weights
-        
-        # Pair-Wise Cross-Attention branch (training only)
-        if self.use_pwca and x_pair is not None and self.training:
-            pwca_out, pwca_weights = self.pwca(self.norm_pwca(x), x_pair)
-            pwca_out = x + pwca_out
-            pwca_out = pwca_out + self.sa_ffn(self.norm_sa_ffn(pwca_out))  # Share FFN with SA
-            outputs['pwca_output'] = pwca_out
-            outputs['pwca_weights'] = pwca_weights
-        
+        outputs: Dict[str, torch.Tensor] = {}
+
+        if attention_history is None:
+            outputs['glca_output'] = x
+            return outputs
+
+        glca_input = self.norm_glca(x)
+        glca_out, glca_weights = self.glca(glca_input, attention_history)
+        x = x + self.drop_path_attn(glca_out)
+        x = x + self.drop_path_ffn(self.ffn(self.norm_ffn(x)))
+
+        outputs['glca_output'] = x
+        outputs['glca_weights'] = glca_weights
         return outputs
 
 
@@ -281,7 +241,8 @@ class DualCrossAttentionViT(nn.Module):
                  num_classes: int = 1000, embed_dim: int = 768,
                  num_sa_layers: int = 12, num_glca_layers: int = 1, num_pwca_layers: int = 12,
                  num_heads: int = 12, hidden_dim: int = 3072, dropout: float = 0.1,
-                 top_k_ratio: float = 0.1, task_type: str = "fgvc", use_gradient_checkpointing: bool = False):
+                 top_k_ratio: float = 0.1, task_type: str = "fgvc", use_gradient_checkpointing: bool = False,
+                 use_stochastic_depth: bool = False, stochastic_depth_prob: float = 0.0):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
@@ -315,17 +276,28 @@ class DualCrossAttentionViT(nn.Module):
         #    → Takes SA-refined embeddings and attention history as input
         # ============================================================================
         
+        # Compute per-block stochastic depth rates (linearly scaled)
+        total_blocks = num_sa_layers + max(num_glca_layers, 0)
+        if use_stochastic_depth and stochastic_depth_prob > 0.0 and total_blocks > 0:
+            dpr = [x.item() for x in torch.linspace(0, stochastic_depth_prob, total_blocks)]
+        else:
+            dpr = [0.0] * total_blocks
+        sa_dpr = dpr[:num_sa_layers]
+        glca_dpr = dpr[num_sa_layers: num_sa_layers + num_glca_layers]
+
         # SA/PWCA blocks (L=12, T=12) - PWCA shares weights with SA
         self.sa_pwca_blocks = nn.ModuleList([
-            TransformerBlockWithPWCA(embed_dim, num_heads, hidden_dim, dropout)
-            for _ in range(num_sa_layers)
+            TransformerBlockWithPWCA(embed_dim, num_heads, hidden_dim, dropout, drop_path_prob=sa_dpr[i] if i < len(sa_dpr) else 0.0)
+            for i in range(num_sa_layers)
         ])
         
         # GLCA blocks (M=1) - Independent weights from SA
         self.glca_blocks = nn.ModuleList([
-            DualCrossAttentionBlock(embed_dim, num_heads, hidden_dim, dropout, 
-                                  top_k_ratio, use_pwca=False)
-            for _ in range(num_glca_layers)
+            DualCrossAttentionBlock(
+                embed_dim, num_heads, hidden_dim, dropout,
+                top_k_ratio, drop_path_prob=(glca_dpr[i] if i < len(glca_dpr) else 0.0)
+            )
+            for i in range(num_glca_layers)
         ])
         
         # Final normalization and classification heads

@@ -51,12 +51,12 @@ class UncertaintyWeightedLoss(nn.Module):
         
         self.log_vars = nn.Parameter(init_values)
         self.num_tasks = num_tasks
-        
-        # CRITICAL: Use tighter bounds to prevent instability during early training
-        # The paper doesn't specify bounds, but empirically w in [-2, 2] gives
-        # weight range [0.135, 7.39] which is more stable than [-3, 3]
-        self.min_log_var = -2.0
-        self.max_log_var = 2.0
+
+        # Allow a broader range; Kendall et al. (2018) does not clamp log vars and
+        # the paper relies on the model to rebalance tasks automatically. We keep
+        # gentle bounds only to avoid numerical explosions.
+        self.min_log_var = -5.0
+        self.max_log_var = 5.0
     
     def forward(self, losses: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float], Dict[str, float]]:
         """

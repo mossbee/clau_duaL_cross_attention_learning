@@ -235,13 +235,11 @@ class GlobalLocalCrossAttention(nn.Module):
         # Create output as zeros (identity residual for non-selected patches)
         # IMPORTANT: Use same dtype as out to avoid mixed precision issues
         output = torch.zeros_like(x, dtype=out.dtype)
-        
-        # Place local attention results back to their positions
-        # CRITICAL: Use proper 3D indexing to assign [B, num_selected, C] to specific positions
-        # We need to scatter the results back to their original positions in the sequence
-        for b in range(B):
-            output[b, selected_indices[b]] = out[b]
-        
+
+        # Vectorised scatter of local attention results back to their original positions
+        index = selected_indices.unsqueeze(-1).expand(-1, num_selected, C)
+        output.scatter_(1, index, out)
+
         return output, attn_weights
 
 

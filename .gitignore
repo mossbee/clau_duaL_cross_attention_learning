@@ -4,6 +4,7 @@ references/dual_cross_attention_learning.md
 references/VeRi_776.md
 references/vit_rollout.py
 references/ViT-pytorch/
+references/pytorch-stochastic-depth/
 trash_can/notes_on_OOM.md
 trash_can/prompt.md
 trash_can/issues.md

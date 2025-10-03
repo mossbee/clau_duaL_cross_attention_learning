@@ -21,6 +21,7 @@ import os
 import sys
 import argparse
 import logging
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -43,6 +44,66 @@ from dual_cross_attention.utils import (
 )
 from dual_cross_attention.configs import get_fgvc_config, get_reid_config
 
+
+class WarmupCosineScheduler:
+    """Warmup + cosine decay learning-rate scheduler (step-based)."""
+
+    def __init__(self, optimizer: optim.Optimizer, warmup_steps: int,
+                 total_steps: int, min_lr: float = 1e-6):
+        if total_steps <= 0:
+            raise ValueError("total_steps must be positive for WarmupCosineScheduler")
+
+        self.optimizer = optimizer
+        self.warmup_steps = max(0, warmup_steps)
+        self.total_steps = max(total_steps, 1)
+        self.min_lr = min_lr
+        self.base_lrs = [group["lr"] for group in optimizer.param_groups]
+        self.step_count = 0
+        self.current_lrs = list(self.base_lrs)
+
+    def _get_lr(self, step: int):
+        step = max(step, 0)
+
+        if self.warmup_steps > 0 and step <= self.warmup_steps:
+            warmup_factor = step / self.warmup_steps
+            return [base_lr * warmup_factor for base_lr in self.base_lrs]
+
+        progress = (step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+        progress = min(max(progress, 0.0), 1.0)
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return [self.min_lr + (base_lr - self.min_lr) * cosine_decay for base_lr in self.base_lrs]
+
+    def step(self):
+        """Advance the schedule by one optimizer step and update parameter group LRs."""
+        self.step_count += 1
+        new_lrs = self._get_lr(self.step_count)
+        for param_group, lr in zip(self.optimizer.param_groups, new_lrs):
+            param_group['lr'] = lr
+        self.current_lrs = new_lrs
+        return new_lrs
+
+    def get_last_lr(self):
+        return list(self.current_lrs)
+
+    def state_dict(self):
+        return {
+            "step_count": self.step_count,
+            "warmup_steps": self.warmup_steps,
+            "total_steps": self.total_steps,
+            "min_lr": self.min_lr,
+            "base_lrs": self.base_lrs,
+            "current_lrs": self.current_lrs,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.step_count = state_dict["step_count"]
+        self.warmup_steps = state_dict["warmup_steps"]
+        self.total_steps = state_dict["total_steps"]
+        self.min_lr = state_dict["min_lr"]
+        self.base_lrs = state_dict["base_lrs"]
+        self.current_lrs = state_dict["current_lrs"]
+        for param_group, lr in zip(self.optimizer.param_groups, self.current_lrs):
+            param_group['lr'] = lr
 
 class DualCrossAttentionTrainer:
     """
@@ -102,6 +163,11 @@ class DualCrossAttentionTrainer:
         # Add gradient checkpointing flag if available
         if hasattr(self.config, 'use_gradient_checkpointing'):
             model_config['use_gradient_checkpointing'] = self.config.use_gradient_checkpointing
+        # Wire stochastic depth config if available
+        if hasattr(self.config, 'use_stochastic_depth'):
+            model_config['use_stochastic_depth'] = getattr(self.config, 'use_stochastic_depth', False)
+        if hasattr(self.config, 'stochastic_depth_prob'):
+            model_config['stochastic_depth_prob'] = getattr(self.config, 'stochastic_depth_prob', 0.0)
         model = DualCrossAttentionViT(**model_config)
         
         # Load pretrained weights if specified or discover common defaults
@@ -228,7 +294,8 @@ class DualCrossAttentionTrainer:
         
         return criterion.to(self.device)
     
-    def setup_optimizer(self, model: nn.Module, criterion: nn.Module) -> Tuple[optim.Optimizer, optim.lr_scheduler._LRScheduler]:
+    def setup_optimizer(self, model: nn.Module, criterion: nn.Module,
+                        steps_per_epoch: int) -> Tuple[optim.Optimizer, WarmupCosineScheduler]:
         """
         Setup optimizer and learning rate scheduler.
         
@@ -241,6 +308,7 @@ class DualCrossAttentionTrainer:
         Args:
             model: Model to optimize
             criterion: Loss function with learnable parameters
+            steps_per_epoch: Number of optimizer updates per epoch (after gradient accumulation)
             
         Returns:
             optimizer: Configured optimizer
@@ -263,11 +331,17 @@ class DualCrossAttentionTrainer:
                 weight_decay=self.config.weight_decay
             )
         
-        # Cosine annealing scheduler
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        steps_per_epoch = max(steps_per_epoch, 1)
+        total_steps = steps_per_epoch * max(self.config.num_epochs, 1)
+        warmup_epochs = getattr(self.config, 'warmup_epochs', 0)
+        warmup_steps = warmup_epochs * steps_per_epoch
+        min_lr = getattr(self.config, 'min_lr', 1e-6)
+
+        scheduler = WarmupCosineScheduler(
             optimizer,
-            T_max=self.config.num_epochs,
-            eta_min=1e-6
+            warmup_steps=warmup_steps,
+            total_steps=total_steps,
+            min_lr=min_lr
         )
         
         return optimizer, scheduler
@@ -350,7 +424,7 @@ class DualCrossAttentionTrainer:
     
     def train_epoch(self, model: nn.Module, train_loader: DataLoader,
                    criterion: nn.Module, optimizer: optim.Optimizer,
-                   epoch: int) -> Dict[str, float]:
+                   epoch: int, scheduler: Optional[WarmupCosineScheduler] = None) -> Dict[str, float]:
         """
         Train one epoch with dual cross-attention and gradient accumulation.
         
@@ -463,6 +537,9 @@ class DualCrossAttentionTrainer:
                 if hasattr(criterion, 'parameters'):
                     torch.nn.utils.clip_grad_norm_(criterion.parameters(), max_grad_norm)
                 
+                if scheduler is not None:
+                    scheduler.step()
+
                 if self.scaler:
                     self.scaler.step(optimizer)
                     self.scaler.update()
@@ -491,6 +568,7 @@ class DualCrossAttentionTrainer:
                 log_dict = {
                     "step": epoch * len(train_loader) + batch_idx,
                     "epoch": epoch,
+                    "optimization/lr": optimizer.param_groups[0]['lr'],
                     
                     # Uncertainty weights
                     "uncertainty/w1": current_metrics.get('w1', 0),
@@ -741,10 +819,11 @@ class DualCrossAttentionTrainer:
         model = self.setup_model()
         train_loader, val_loader, test_loader = self.setup_data_loaders()
         criterion = self.setup_criterion()
-        optimizer, scheduler = self.setup_optimizer(model, criterion)
+        accumulation_steps = getattr(self.config, 'gradient_accumulation_steps', 1)
+        steps_per_epoch = math.ceil(len(train_loader) / max(1, accumulation_steps))
+        optimizer, scheduler = self.setup_optimizer(model, criterion, steps_per_epoch)
         
         # Print training configuration
-        accumulation_steps = getattr(self.config, 'gradient_accumulation_steps', 1)
         effective_batch_size = self.config.batch_size * accumulation_steps
         
         print(f"Starting training for {self.config.num_epochs} epochs")
@@ -756,14 +835,13 @@ class DualCrossAttentionTrainer:
         
         for epoch in range(1, self.config.num_epochs + 1):
             # Training phase
-            train_metrics = self.train_epoch(model, train_loader, criterion, optimizer, epoch)
+            train_metrics = self.train_epoch(model, train_loader, criterion, optimizer, epoch, scheduler)
             
             # Compute weight norms for all modules (detect divergence)
             weight_norms = self._compute_weight_norm(model)
             
             # Update learning rate
-            current_lr = scheduler.get_last_lr()[0]
-            scheduler.step()
+            current_lr = scheduler.get_last_lr()[0] if scheduler is not None else optimizer.param_groups[0]['lr']
             
             # Print detailed training metrics after each epoch
             print(f"\n{'='*80}")
