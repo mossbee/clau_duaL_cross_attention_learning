@@ -547,7 +547,8 @@ class DualCrossAttentionTrainer:
                     optimizer.step()
             
             # Update progress bar with key metrics (compact to avoid truncation)
-            if batch_idx % self.config.log_frequency == 0:
+            # Only update every few iterations to reduce overhead
+            if batch_idx % 10 == 0:
                 current_metrics = self.metrics_tracker.get_current_metrics()
                 pbar.set_postfix({
                     'L': f"{current_metrics['total_loss']:.3f}",
@@ -559,12 +560,12 @@ class DualCrossAttentionTrainer:
                     'w3': f"{current_metrics.get('w3', 0):.1f}"
                 })
             
-            # Enhanced wandb logging every log_frequency steps
-            if batch_idx % self.config.log_frequency == 0 and self.wandb_project:
+            # Lightweight wandb logging - reduced frequency and minimal stats
+            if batch_idx % (self.config.log_frequency * 5) == 0 and self.wandb_project:
                 import wandb
                 current_metrics = self.metrics_tracker.get_current_metrics()
                 
-                # Basic metrics
+                # Only log essential metrics to reduce overhead
                 log_dict = {
                     "step": epoch * len(train_loader) + batch_idx,
                     "epoch": epoch,
@@ -574,9 +575,6 @@ class DualCrossAttentionTrainer:
                     "uncertainty/w1": current_metrics.get('w1', 0),
                     "uncertainty/w2": current_metrics.get('w2', 0),
                     "uncertainty/w3": current_metrics.get('w3', 0),
-                    "uncertainty/weight_sa": current_metrics.get('weight_sa', 0),
-                    "uncertainty/weight_glca": current_metrics.get('weight_glca', 0),
-                    "uncertainty/weight_pwca": current_metrics.get('weight_pwca', 0),
                     
                     # Loss components
                     "losses/total_loss": current_metrics.get('total_loss', 0),
@@ -588,30 +586,11 @@ class DualCrossAttentionTrainer:
                     "train/sa_acc": current_metrics.get('sa_acc', 0),
                     "train/glca_acc": current_metrics.get('glca_acc', 0),
                     "train/pwca_acc": current_metrics.get('pwca_acc', 0),
-                    
-                    # Gradient health
-                    "gradients/global_norm": grad_norm if grad_norm is not None else 0,
                 }
                 
-                # Feature activation statistics (detect saturation/dead neurons)
-                if 'sa_logits' in outputs:
-                    log_dict.update(self._compute_activation_stats(outputs['sa_logits'], 'activations/sa_logits'))
-                if 'glca_logits' in outputs:
-                    log_dict.update(self._compute_activation_stats(outputs['glca_logits'], 'activations/glca_logits'))
-                if 'sa_features' in outputs:
-                    log_dict.update(self._compute_activation_stats(outputs['sa_features'], 'activations/sa_features'))
-                if 'glca_features' in outputs:
-                    log_dict.update(self._compute_activation_stats(outputs['glca_features'], 'activations/glca_features'))
-                
-                # Batch statistics
-                log_dict['batch/mean'] = images.mean().item()
-                log_dict['batch/std'] = images.std().item()
-                log_dict['batch/size'] = images.size(0)
-                
-                # Attention statistics (every 10x log_frequency for efficiency)
-                if batch_idx % (self.config.log_frequency * 10) == 0:
-                    attention_stats = self._compute_attention_stats(model)
-                    log_dict.update(attention_stats)
+                # Only log gradient norm if available (lightweight)
+                if grad_norm is not None:
+                    log_dict["gradients/global_norm"] = grad_norm
                 
                 wandb.log(log_dict)
         
@@ -656,8 +635,8 @@ class DualCrossAttentionTrainer:
                 images = batch['images'].to(self.device)
                 labels = batch['labels'].to(self.device)
                 
-                # Forward pass (no PWCA during evaluation, use inference mode for SA+GLCA combination)
-                outputs = model(images, inference_mode=True)
+                # Forward pass (no PWCA during evaluation, pass None for paired_images)
+                outputs = model(images, paired_images=None)
                 
                 # Compute loss
                 targets = {"labels": labels}
@@ -666,6 +645,7 @@ class DualCrossAttentionTrainer:
                 num_batches += 1
                 
                 # Combine SA and GLCA predictions as per paper for FGVC inference
+                # Paper: "We add class probabilities output by classifiers of SA and GLCA for prediction for FGVC"
                 if 'sa_logits' in outputs and 'glca_logits' in outputs:
                     # Convert logits to probabilities and combine (as per paper)
                     sa_probs = F.softmax(outputs['sa_logits'], dim=-1)
@@ -881,18 +861,30 @@ class DualCrossAttentionTrainer:
             if epoch % self.config.eval_frequency == 0 or epoch == self.config.num_epochs:
                 val_metrics = self.evaluate(model, val_loader, criterion, "val")
                 
-                # Determine if this is the best model
-                current_metric = val_metrics.get('top1_acc', val_metrics.get('mAP', 0))
+                # Determine if this is the best model based on ACCURACY (not loss!)
+                # For FGVC: use top1_acc, for Re-ID: use mAP
+                if self.config.task_type == "fgvc":
+                    current_metric = val_metrics.get('top1_acc', 0.0)
+                    metric_name = "Top-1 Acc"
+                else:
+                    current_metric = val_metrics.get('mAP', 0.0)
+                    metric_name = "mAP"
+                
                 is_best = current_metric > self.best_metric
                 
                 if is_best:
                     self.best_metric = current_metric
                     self.best_epoch = epoch
                 
-                # Log metrics
-                print(f"Epoch {epoch}/{self.config.num_epochs}")
+                # Log metrics with proper formatting
+                print(f"\nEpoch {epoch}/{self.config.num_epochs}")
                 print(f"Train Loss: {train_metrics['total_loss']:.4f}")
-                print(f"Val Metric: {current_metric:.4f} (Best: {self.best_metric:.4f} @ epoch {self.best_epoch})")
+                if self.config.task_type == "fgvc":
+                    print(f"Val Top-1 Acc: {val_metrics.get('top1_acc', 0):.2f}% (Best: {self.best_metric:.2f}% @ epoch {self.best_epoch})")
+                    print(f"Val Top-5 Acc: {val_metrics.get('top5_acc', 0):.2f}%")
+                else:
+                    print(f"Val mAP: {val_metrics.get('mAP', 0):.2f}% (Best: {self.best_metric:.2f}% @ epoch {self.best_epoch})")
+                    print(f"Val Rank-1: {val_metrics.get('rank1', 0):.2f}%")
                 
                 # Enhanced wandb logging at epoch level
                 if self.wandb_project:

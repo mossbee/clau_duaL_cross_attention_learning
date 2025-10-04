@@ -367,72 +367,35 @@ class DualCrossAttentionViT(nn.Module):
         # SA/PWCA branch - L=12, T=12 blocks with SHARED weights
         # Per paper: "The PWCA branch shares weights with the SA branch"
         # 
-        # MEMORY-EFFICIENT IMPLEMENTATION using gradient checkpointing:
         # Paper: "query, key and value vectors are separately computed for both images"
-        # Both images evolve through SA layers, but we use checkpointing for paired image
-        # to trade computation for memory.
+        # Both images evolve through SA layers in parallel
         sa_attention_history = []
         sa_x = x.clone()
         pwca_x = x.clone() if (x_pair is not None and self.training) else None
         
         for block in self.sa_pwca_blocks:
             if x_pair is not None and self.training:
-                if self.use_gradient_checkpointing:
-                    # AGGRESSIVE GRADIENT CHECKPOINTING: Checkpoint both SA and PWCA paths
-                    # This significantly reduces memory at the cost of recomputation during backward
-                    
-                    def sa_forward_fn(x_in):
-                        out, weights = block.sa(block.norm1(x_in))
-                        x_out = x_in + out
-                        x_out = x_out + block.ffn(block.norm2(x_out))
-                        return x_out, weights
-                    
-                    def pwca_forward_fn(x_in, x_pair_in):
-                        out, _ = block.pwca(block.norm1(x_in), block.norm1(x_pair_in))
-                        x_out = x_in + out
-                        x_out = x_out + block.ffn(block.norm2(x_out))
-                        return x_out
-                    
-                    # Checkpoint SA forward for target image
-                    sa_x, sa_weights = checkpoint(
-                        sa_forward_fn, sa_x, use_reentrant=False
-                    )
-                    sa_attention_history.append(sa_weights.detach())  # Detach to save memory
-                    
-                    # Checkpoint SA forward for paired image
-                    x_pair = checkpoint(
-                        lambda x_in: sa_forward_fn(x_in)[0], x_pair, use_reentrant=False
-                    )
-                    
-                    # Checkpoint PWCA forward
-                    pwca_x = checkpoint(
-                        pwca_forward_fn, pwca_x, x_pair, use_reentrant=False
-                    )
-                else:
-                    # Standard forward without checkpointing (faster but more memory)
-                    sa_out, sa_weights = block.sa(block.norm1(sa_x))
-                    sa_x = sa_x + sa_out
-                    sa_x = sa_x + block.ffn(block.norm2(sa_x))
-                    sa_attention_history.append(sa_weights)
-                    
-                    # Process paired image through SA
-                    sa_out_pair, _ = block.sa(block.norm1(x_pair))
-                    x_pair = x_pair + sa_out_pair
-                    x_pair = x_pair + block.ffn(block.norm2(x_pair))
-                    
-                    # Compute PWCA for target image using evolved paired features
-                    pwca_out, _ = block.pwca(block.norm1(pwca_x), block.norm1(x_pair))
-                    pwca_x = pwca_x + pwca_out
-                    pwca_x = pwca_x + block.ffn(block.norm2(pwca_x))
+                # Standard forward without checkpointing (faster, as paper doesn't mention checkpointing)
+                # Process SA for target image
+                sa_out, sa_weights = block.sa(block.norm1(sa_x))
+                sa_x = sa_x + block.drop_path1(sa_out)
+                sa_x = sa_x + block.drop_path2(block.ffn(block.norm2(sa_x)))
+                sa_attention_history.append(sa_weights)
+                
+                # Process paired image through SA (evolve x_pair)
+                sa_out_pair, _ = block.sa(block.norm1(x_pair))
+                x_pair = x_pair + block.drop_path1(sa_out_pair)
+                x_pair = x_pair + block.drop_path2(block.ffn(block.norm2(x_pair)))
+                
+                # Compute PWCA for target image using evolved paired features
+                pwca_out, _ = block.pwca(block.norm1(pwca_x), block.norm1(x_pair))
+                pwca_x = pwca_x + block.drop_path1(pwca_out)
+                pwca_x = pwca_x + block.drop_path2(block.ffn(block.norm2(pwca_x)))
             else:
                 # No PWCA training, just SA
                 block_outputs = block(sa_x, x_pair=None)
                 sa_x = block_outputs['sa_output']
-                if not self.training or not self.use_gradient_checkpointing:
-                    sa_attention_history.append(block_outputs['sa_weights'])
-                else:
-                    # During training with checkpointing, detach to save memory
-                    sa_attention_history.append(block_outputs['sa_weights'].detach())
+                sa_attention_history.append(block_outputs['sa_weights'])
         
         # SA branch output
         sa_features = self.norm(sa_x)[:, 0]  # CLS token
