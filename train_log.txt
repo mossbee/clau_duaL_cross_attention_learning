@@ -1,33 +1,32 @@
 Setting up training components...
 Loading pretrained weights from /kaggle/input/cub-200-2011/ViT-B_16.npz
 ✓ Mixed precision training enabled (FP16)
-✓ Gradient checkpointing enabled (trades compute for memory)
 Model initialized with 93.65M parameters
 CUB Dataset: 5994 train samples loaded
 CUB Dataset: 5794 test samples loaded
 Starting training for 100 epochs
 Training samples: 5994
 Validation samples: 5794
-Physical batch size: 16
-Gradient accumulation steps: 2
-Effective batch size: 32
-Epoch 1: 100%|############| 374/374 [42:49<00:00,  6.87s/it, L=8.113, SA=0.01, GL=0.00, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
+Physical batch size: 4
+Gradient accumulation steps: 4
+Effective batch size: 16
+Epoch 1: 100%|##########| 1498/1498 [33:02<00:00,  1.32s/it, L=8.093, SA=0.01, GL=0.01, PW=0.00, w1=0.0, w2=0.0, w3=0.0]
 
 ================================================================================
 EPOCH 1 SUMMARY
 ================================================================================
-Learning Rate: 0.000006
+Learning Rate: 0.000003
 
 Loss Breakdown:
-  Total Loss:    8.1087
-  SA Loss:       5.4244
-  GLCA Loss:     5.4343
-  PWCA Loss:     5.3610
+  Total Loss:    8.0930
+  SA Loss:       5.3992
+  GLCA Loss:     5.4260
+  PWCA Loss:     5.3632
 
 Accuracy:
-  SA Acc:        0.0053
-  GLCA Acc:      0.0042
-  PWCA Acc:      0.0070
+  SA Acc:        0.0082
+  GLCA Acc:      0.0050
+  PWCA Acc:      0.0033
 
 Uncertainty Weights (raw w_i):
   w1 (SA):       0.0002
@@ -39,56 +38,56 @@ Effective Loss Weights (1/exp(w_i)):
   Weight GLCA:   0.9998
   Weight PWCA:   0.9998
 
-⚠️  WARNING: SA accuracy is very low (0.53%)!
+⚠️  WARNING: SA accuracy is very low (0.82%)!
 ================================================================================
-Epoch 2: 100%|############| 374/374 [42:47<00:00,  6.86s/it, L=8.033, SA=0.00, GL=0.01, PW=0.00, w1=0.0, w2=0.0, w3=0.0]
+Epoch 2: 100%|##########| 1498/1498 [33:01<00:00,  1.32s/it, L=8.037, SA=0.01, GL=0.01, PW=0.00, w1=0.0, w2=0.0, w3=0.0]
 
 
 ================================================================================
 EPOCH 2 SUMMARY
 ================================================================================
-Learning Rate: 0.000013
+Learning Rate: 0.000006
 
 Loss Breakdown:
-  Total Loss:    8.0196
-  SA Loss:       5.3527
-  GLCA Loss:     5.3525
-  PWCA Loss:     5.3514
+  Total Loss:    8.0369
+  SA Loss:       5.3550
+  GLCA Loss:     5.3795
+  PWCA Loss:     5.3571
 
 Accuracy:
-  SA Acc:        0.0047
-  GLCA Acc:      0.0053
-  PWCA Acc:      0.0042
+  SA Acc:        0.0085
+  GLCA Acc:      0.0072
+  PWCA Acc:      0.0035
 
 Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0013
-  w2 (GLCA):     0.0013
+  w1 (SA):       0.0014
+  w2 (GLCA):     0.0014
   w3 (PWCA):     0.0014
 
 Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9987
-  Weight GLCA:   0.9987
-  Weight PWCA:   0.9987
+  Weight SA:     0.9986
+  Weight GLCA:   0.9986
+  Weight PWCA:   0.9986
 
-⚠️  WARNING: SA accuracy is very low (0.47%)!
+⚠️  WARNING: SA accuracy is very low (0.85%)!
 ================================================================================
-Epoch 3: 100%|############| 374/374 [42:46<00:00,  6.86s/it, L=7.867, SA=0.01, GL=0.01, PW=0.00, w1=0.0, w2=0.0, w3=0.0]
+Epoch 3: 100%|##########| 1498/1498 [33:01<00:00,  1.32s/it, L=7.919, SA=0.01, GL=0.01, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
 
 
 ================================================================================
 EPOCH 3 SUMMARY
 ================================================================================
-Learning Rate: 0.000019
+Learning Rate: 0.000009
 
 Loss Breakdown:
-  Total Loss:    7.8473
-  SA Loss:       5.2101
-  GLCA Loss:     5.1925
-  PWCA Loss:     5.3386
+  Total Loss:    7.9189
+  SA Loss:       5.2606
+  GLCA Loss:     5.2907
+  PWCA Loss:     5.3340
 
 Accuracy:
-  SA Acc:        0.0142
-  GLCA Acc:      0.0137
+  SA Acc:        0.0125
+  GLCA Acc:      0.0127
   PWCA Acc:      0.0053
 
 Uncertainty Weights (raw w_i):
@@ -101,424 +100,89 @@ Effective Loss Weights (1/exp(w_i)):
   Weight GLCA:   0.9963
   Weight PWCA:   0.9963
 
-⚠️  WARNING: SA accuracy is very low (1.42%)!
+⚠️  WARNING: SA accuracy is very low (1.25%)!
 ================================================================================
-Epoch 4: 100%|############| 374/374 [42:47<00:00,  6.86s/it, L=7.637, SA=0.04, GL=0.04, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
+Epoch 4: 100%|##########| 1498/1498 [33:01<00:00,  1.32s/it, L=7.758, SA=0.03, GL=0.02, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
 
 
 ================================================================================
 EPOCH 4 SUMMARY
 ================================================================================
-Learning Rate: 0.000025
+Learning Rate: 0.000013
 
 Loss Breakdown:
-  Total Loss:    7.6181
-  SA Loss:       5.0276
-  GLCA Loss:     4.9920
-  PWCA Loss:     5.3046
+  Total Loss:    7.7579
+  SA Loss:       5.1402
+  GLCA Loss:     5.1648
+  PWCA Loss:     5.3013
 
 Accuracy:
-  SA Acc:        0.0419
-  GLCA Acc:      0.0418
-  PWCA Acc:      0.0072
+  SA Acc:        0.0255
+  GLCA Acc:      0.0202
+  PWCA Acc:      0.0078
 
 Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0071
-  w2 (GLCA):     0.0071
+  w1 (SA):       0.0072
+  w2 (GLCA):     0.0072
   w3 (PWCA):     0.0073
 
 Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9929
-  Weight GLCA:   0.9929
+  Weight SA:     0.9928
+  Weight GLCA:   0.9928
   Weight PWCA:   0.9927
 
-⚠️  WARNING: SA accuracy is very low (4.19%)!
+⚠️  WARNING: SA accuracy is very low (2.55%)!
 ================================================================================
-Epoch 5: 100%|############| 374/374 [42:48<00:00,  6.87s/it, L=7.478, SA=0.08, GL=0.09, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
+Epoch 5: 100%|##########| 1498/1498 [33:01<00:00,  1.32s/it, L=7.595, SA=0.05, GL=0.04, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
 
 
 ================================================================================
 EPOCH 5 SUMMARY
 ================================================================================
-Learning Rate: 0.000031
+Learning Rate: 0.000016
 
 Loss Breakdown:
-  Total Loss:    7.4829
-  SA Loss:       4.9295
-  GLCA Loss:     4.8853
-  PWCA Loss:     5.2936
+  Total Loss:    7.5947
+  SA Loss:       5.0134
+  GLCA Loss:     5.0498
+  PWCA Loss:     5.2717
 
 Accuracy:
-  SA Acc:        0.0724
-  GLCA Acc:      0.0884
-  PWCA Acc:      0.0075
+  SA Acc:        0.0522
+  GLCA Acc:      0.0444
+  PWCA Acc:      0.0110
 
 Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0117
-  w2 (GLCA):     0.0117
-  w3 (PWCA):     0.0122
+  w1 (SA):       0.0118
+  w2 (GLCA):     0.0118
+  w3 (PWCA):     0.0121
 
 Effective Loss Weights (1/exp(w_i)):
   Weight SA:     0.9883
-  Weight GLCA:   0.9884
-  Weight PWCA:   0.9879
+  Weight GLCA:   0.9883
+  Weight PWCA:   0.9880
 
-⚠️  WARNING: SA accuracy is very low (7.24%)!
+⚠️  WARNING: SA accuracy is very low (5.22%)!
 ================================================================================
-Evaluating val: 100%|#############################################| 363/363 [03:16<00:00,  1.85it/s]
-
-Epoch 5/100
-Train Loss: 7.4829
-Val Metric: 21.5050 (Best: 21.5050 @ epoch 5)
-New best model saved with metric: 21.5050
-Epoch 6: 100%|############| 374/374 [42:48<00:00,  6.87s/it, L=7.577, SA=0.05, GL=0.06, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
-
-================================================================================
-EPOCH 6 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.5976
-  SA Loss:       5.0674
-  GLCA Loss:     5.0331
-  PWCA Loss:     5.3098
-
-Accuracy:
-  SA Acc:        0.0406
-  GLCA Acc:      0.0538
-  PWCA Acc:      0.0053
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0173
-  w2 (GLCA):     0.0172
-  w3 (PWCA):     0.0179
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9828
-  Weight GLCA:   0.9829
-  Weight PWCA:   0.9822
-
-⚠️  WARNING: SA accuracy is very low (4.06%)!
-================================================================================
-Epoch 7: 100%|############| 374/374 [42:48<00:00,  6.87s/it, L=7.700, SA=0.02, GL=0.02, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
-
-
-================================================================================
-EPOCH 7 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.7110
-  SA Loss:       5.2090
-  GLCA Loss:     5.1905
-  PWCA Loss:     5.3151
-
-Accuracy:
-  SA Acc:        0.0145
-  GLCA Acc:      0.0180
-  PWCA Acc:      0.0050
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0232
-  w2 (GLCA):     0.0231
-  w3 (PWCA):     0.0237
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9771
-  Weight GLCA:   0.9772
-  Weight PWCA:   0.9765
-
-⚠️  WARNING: SA accuracy is very low (1.45%)!
-
-⚠️  WARNING: Accuracy dropped significantly from previous epoch!
-================================================================================
-Epoch 8: 100%|############| 374/374 [42:47<00:00,  6.87s/it, L=7.729, SA=0.01, GL=0.01, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
-
-
-================================================================================
-EPOCH 8 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.7307
-  SA Loss:       5.2647
-  GLCA Loss:     5.2502
-  PWCA Loss:     5.3140
-
-Accuracy:
-  SA Acc:        0.0084
-  GLCA Acc:      0.0095
-  PWCA Acc:      0.0060
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0290
-  w2 (GLCA):     0.0290
-  w3 (PWCA):     0.0295
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9714
-  Weight GLCA:   0.9714
-  Weight PWCA:   0.9710
-
-⚠️  WARNING: SA accuracy is very low (0.84%)!
-================================================================================
-Epoch 9: 100%|############| 374/374 [42:48<00:00,  6.87s/it, L=7.721, SA=0.01, GL=0.01, PW=0.00, w1=0.0, w2=0.0, w3=0.0]
-
-
-================================================================================
-EPOCH 9 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.7218
-  SA Loss:       5.2908
-  GLCA Loss:     5.2785
-  PWCA Loss:     5.3156
-
-Accuracy:
-  SA Acc:        0.0080
-  GLCA Acc:      0.0065
-  PWCA Acc:      0.0050
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0349
-  w2 (GLCA):     0.0349
-  w3 (PWCA):     0.0352
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9657
-  Weight GLCA:   0.9657
-  Weight PWCA:   0.9654
-
-⚠️  WARNING: SA accuracy is very low (0.80%)!
-================================================================================
-Epoch 10: 100%|###########| 374/374 [42:48<00:00,  6.87s/it, L=7.701, SA=0.01, GL=0.01, PW=0.00, w1=0.0, w2=0.0, w3=0.0]
-
-
-================================================================================
-EPOCH 10 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.6977
-  SA Loss:       5.3015
-  GLCA Loss:     5.2916
-  PWCA Loss:     5.3159
-
-Accuracy:
-  SA Acc:        0.0070
-  GLCA Acc:      0.0072
-  PWCA Acc:      0.0047
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0408
-  w2 (GLCA):     0.0407
-  w3 (PWCA):     0.0409
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9600
-  Weight GLCA:   0.9601
-  Weight PWCA:   0.9599
-
-⚠️  WARNING: SA accuracy is very low (0.70%)!
-================================================================================
-Evaluating val: 100%|#############################################| 363/363 [03:16<00:00,  1.85it/s]
-
-Epoch 10/100
-Train Loss: 7.6977
-Val Metric: 0.7939 (Best: 21.5050 @ epoch 5)
-Epoch 11: 100%|###########| 374/374 [42:48<00:00,  6.87s/it, L=7.669, SA=0.01, GL=0.01, PW=0.01, w1=0.0, w2=0.0, w3=0.0]
-
-================================================================================
-EPOCH 11 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.6663
-  SA Loss:       5.3044
-  GLCA Loss:     5.2935
-  PWCA Loss:     5.3195
-
-Accuracy:
-  SA Acc:        0.0060
-  GLCA Acc:      0.0070
-  PWCA Acc:      0.0057
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0466
-  w2 (GLCA):     0.0466
-  w3 (PWCA):     0.0466
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9545
-  Weight GLCA:   0.9545
-  Weight PWCA:   0.9545
-
-⚠️  WARNING: SA accuracy is very low (0.60%)!
-================================================================================
-Epoch 12: 100%|###########| 374/374 [42:48<00:00,  6.87s/it, L=7.631, SA=0.01, GL=0.01, PW=0.01, w1=0.1, w2=0.1, w3=0.1]
-
-
-================================================================================
-EPOCH 12 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.6277
-  SA Loss:       5.3043
-  GLCA Loss:     5.2962
-  PWCA Loss:     5.3096
-
-Accuracy:
-  SA Acc:        0.0069
-  GLCA Acc:      0.0062
-  PWCA Acc:      0.0060
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0524
-  w2 (GLCA):     0.0524
-  w3 (PWCA):     0.0523
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9489
-  Weight GLCA:   0.9490
-  Weight PWCA:   0.9490
-
-⚠️  WARNING: SA accuracy is very low (0.69%)!
-================================================================================
-Epoch 13: 100%|###########| 374/374 [42:47<00:00,  6.87s/it, L=7.604, SA=0.01, GL=0.01, PW=0.00, w1=0.1, w2=0.1, w3=0.1]
-
-
-================================================================================
-EPOCH 13 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.6011
-  SA Loss:       5.3087
-  GLCA Loss:     5.3028
-  PWCA Loss:     5.3159
-
-Accuracy:
-  SA Acc:        0.0067
-  GLCA Acc:      0.0052
-  PWCA Acc:      0.0043
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0582
-  w2 (GLCA):     0.0582
-  w3 (PWCA):     0.0580
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9435
-  Weight GLCA:   0.9435
-  Weight PWCA:   0.9437
-
-⚠️  WARNING: SA accuracy is very low (0.67%)!
-================================================================================
-Epoch 14: 100%|###########| 374/374 [42:47<00:00,  6.87s/it, L=7.572, SA=0.01, GL=0.00, PW=0.00, w1=0.1, w2=0.1, w3=0.1]
-
-
-================================================================================
-EPOCH 14 SUMMARY
-================================================================================
-Learning Rate: 0.000031
-
-Loss Breakdown:
-  Total Loss:    7.5697
-  SA Loss:       5.3127
-  GLCA Loss:     5.3026
-  PWCA Loss:     5.3182
-
-Accuracy:
-  SA Acc:        0.0079
-  GLCA Acc:      0.0052
-  PWCA Acc:      0.0040
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0640
-  w2 (GLCA):     0.0640
-  w3 (PWCA):     0.0637
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9380
-  Weight GLCA:   0.9380
-  Weight PWCA:   0.9383
-
-⚠️  WARNING: SA accuracy is very low (0.79%)!
-================================================================================
-Epoch 15: 100%|###########| 374/374 [42:47<00:00,  6.86s/it, L=7.539, SA=0.01, GL=0.01, PW=0.00, w1=0.1, w2=0.1, w3=0.1]
-
-
-================================================================================
-EPOCH 15 SUMMARY
-================================================================================
-Learning Rate: 0.000030
-
-Loss Breakdown:
-  Total Loss:    7.5376
-  SA Loss:       5.3138
-  GLCA Loss:     5.3062
-  PWCA Loss:     5.3176
-
-Accuracy:
-  SA Acc:        0.0065
-  GLCA Acc:      0.0058
-  PWCA Acc:      0.0047
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0697
-  w2 (GLCA):     0.0697
-  w3 (PWCA):     0.0693
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9327
-  Weight GLCA:   0.9327
-  Weight PWCA:   0.9330
-
-⚠️  WARNING: SA accuracy is very low (0.65%)!
-================================================================================
-Evaluating val: 100%|#############################################| 363/363 [03:16<00:00,  1.85it/s]
-
-Epoch 15/100
-Train Loss: 7.5376
-Val Metric: 0.5696 (Best: 21.5050 @ epoch 5)
-Epoch 16: 100%|###########| 374/374 [42:47<00:00,  6.87s/it, L=7.508, SA=0.00, GL=0.00, PW=0.00, w1=0.1, w2=0.1, w3=0.1]
-
-================================================================================
-EPOCH 16 SUMMARY
-================================================================================
-Learning Rate: 0.000030
-
-Loss Breakdown:
-  Total Loss:    7.5057
-  SA Loss:       5.3171
-  GLCA Loss:     5.3082
-  PWCA Loss:     5.3159
-
-Accuracy:
-  SA Acc:        0.0047
-  GLCA Acc:      0.0043
-  PWCA Acc:      0.0050
-
-Uncertainty Weights (raw w_i):
-  w1 (SA):       0.0754
-  w2 (GLCA):     0.0754
-  w3 (PWCA):     0.0750
-
-Effective Loss Weights (1/exp(w_i)):
-  Weight SA:     0.9274
-  Weight GLCA:   0.9274
-  Weight PWCA:   0.9278
-
-⚠️  WARNING: SA accuracy is very low (0.47%)!
-================================================================================
-Epoch 17:  54%|#####9     | 203/374 [23:12<18:29,  6.49s/it, L=7.472, SA=0.01, GL=0.01, PW=0.01, w1=0.1, w2=0.1, w3=0.1]
+Evaluating val:   0%|                                                      | 0/1449 [00:00<?, ?it/s]
+Traceback (most recent call last):
+  File "/kaggle/working/clau_dual_cross_attention_learning/train.py", line 1088, in <module>
+    main()
+  File "/kaggle/working/clau_dual_cross_attention_learning/train.py", line 1080, in main
+    trainer.train()
+  File "/kaggle/working/clau_dual_cross_attention_learning/train.py", line 862, in train
+    val_metrics = self.evaluate(model, val_loader, criterion, "val")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/clau_dual_cross_attention_learning/train.py", line 620, in evaluate
+    return self._evaluate_fgvc(model, data_loader, criterion, split)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/clau_dual_cross_attention_learning/train.py", line 639, in _evaluate_fgvc
+    outputs = model(images, paired_images=None)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: DualCrossAttentionViT.forward() got an unexpected keyword argument 'paired_images'

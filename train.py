@@ -495,7 +495,7 @@ class DualCrossAttentionTrainer:
                 context = nullcontext()
             
             with context:
-                outputs = model(images, paired_images)
+                outputs = model(images, x_pair=paired_images)
                 
                 # Compute loss
                 targets = {"labels": labels}
@@ -635,8 +635,8 @@ class DualCrossAttentionTrainer:
                 images = batch['images'].to(self.device)
                 labels = batch['labels'].to(self.device)
                 
-                # Forward pass (no PWCA during evaluation, pass None for paired_images)
-                outputs = model(images, paired_images=None)
+                # Forward pass (no PWCA during evaluation, pass None for x_pair)
+                outputs = model(images, x_pair=None)
                 
                 # Compute loss
                 targets = {"labels": labels}
