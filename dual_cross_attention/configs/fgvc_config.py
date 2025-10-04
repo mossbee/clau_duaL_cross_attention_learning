@@ -52,7 +52,7 @@ class FGVCConfig:
     share_pwca_weights: bool = True  # PWCA shares weights with SA
     
     # Training hyperparameters (from paper)
-    batch_size: int = 16  # Physical batch size
+    batch_size: int = 8  # Physical batch size
     gradient_accumulation_steps: int = 2  # Accumulate gradients over 2 steps to maintain effective batch size of 32
     num_epochs: int = 100
     learning_rate: float = 5e-4  # Will be scaled: lr * effective_batch_size / 512
