@@ -380,7 +380,8 @@ class DualCrossAttentionViT(nn.Module):
                 sa_out, sa_weights = block.sa(block.norm1(sa_x))
                 sa_x = sa_x + block.drop_path1(sa_out)
                 sa_x = sa_x + block.drop_path2(block.ffn(block.norm2(sa_x)))
-                sa_attention_history.append(sa_weights)
+                # Detach attention weights to prevent memory leak during training
+                sa_attention_history.append(sa_weights.detach())
                 
                 # Process paired image through SA (evolve x_pair)
                 sa_out_pair, _ = block.sa(block.norm1(x_pair))
@@ -395,7 +396,8 @@ class DualCrossAttentionViT(nn.Module):
                 # No PWCA training, just SA
                 block_outputs = block(sa_x, x_pair=None)
                 sa_x = block_outputs['sa_output']
-                sa_attention_history.append(block_outputs['sa_weights'])
+                # Detach attention weights to prevent memory leak
+                sa_attention_history.append(block_outputs['sa_weights'].detach() if self.training else block_outputs['sa_weights'])
         
         # SA branch output
         sa_features = self.norm(sa_x)[:, 0]  # CLS token
