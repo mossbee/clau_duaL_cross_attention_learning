@@ -202,6 +202,11 @@ class DualCrossAttentionTrainer:
         
         # Move to device
         model = model.to(self.device)
+
+        # Freeze unused in-model uncertainty weighting (we use criterion's weighting per paper)
+        if hasattr(model, 'loss_weighting'):
+            for param in model.loss_weighting.parameters():
+                param.requires_grad = False
         
         # Enable mixed precision if specified
         if hasattr(self.config, 'mixed_precision') and self.config.mixed_precision:

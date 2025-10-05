@@ -85,7 +85,7 @@ class FGVCConfig:
     device: str = "cuda"
     num_workers: int = 4
     pin_memory: bool = True
-    mixed_precision: bool = True
+    mixed_precision: bool = False
     
     # Logging and checkpoints
     log_frequency: int = 50  # Log every 50 batches (reduced overhead)
