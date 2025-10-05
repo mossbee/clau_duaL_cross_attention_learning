@@ -52,8 +52,8 @@ class FGVCConfig:
     share_pwca_weights: bool = True  # PWCA shares weights with SA
     
     # Training hyperparameters (from paper)
-    batch_size: int = 4  # Physical batch size
-    gradient_accumulation_steps: int = 4  # Accumulate gradients over 2 steps to maintain effective batch size of 32
+    batch_size: int = 2  # Physical batch size (reduce to save memory)
+    gradient_accumulation_steps: int = 8  # Keep effective batch size 16 as in paper
     num_epochs: int = 100
     learning_rate: float = 5e-4  # Will be scaled: lr * effective_batch_size / 512
     weight_decay: float = 0.05
@@ -61,7 +61,7 @@ class FGVCConfig:
     lr_scheduler: str = "cosine"
     warmup_epochs: int = 0  # No warmup mentioned in the paper
     max_grad_norm: float = 1.0  # Gradient clipping (from ViT-pytorch reference)
-    use_gradient_checkpointing: bool = False  # DISABLE for speed (not mentioned in paper; trades memory for compute)
+    use_gradient_checkpointing: bool = True  # Enable to reduce memory while preserving training behavior
     
     # Loss settings
     use_uncertainty_weighting: bool = True
@@ -85,7 +85,7 @@ class FGVCConfig:
     device: str = "cuda"
     num_workers: int = 4
     pin_memory: bool = True
-    mixed_precision: bool = False
+    mixed_precision: bool = True
     
     # Logging and checkpoints
     log_frequency: int = 50  # Log every 50 batches (reduced overhead)
