@@ -59,7 +59,7 @@ class FGVCConfig:
     weight_decay: float = 0.05
     optimizer: str = "adam"
     lr_scheduler: str = "cosine"
-    warmup_epochs: int = 5
+    warmup_epochs: int = 0  # No warmup mentioned in the paper
     max_grad_norm: float = 1.0  # Gradient clipping (from ViT-pytorch reference)
     use_gradient_checkpointing: bool = False  # DISABLE for speed (not mentioned in paper; trades memory for compute)
     
