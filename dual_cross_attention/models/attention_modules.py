@@ -195,14 +195,19 @@ class GlobalLocalCrossAttention(nn.Module):
         # Compute attention rollout from previous SA layers
         rollout_scores = self.compute_attention_rollout(attention_history)
         
-        if rollout_scores is None:
-            # Fallback: use all patches if no attention history
+        if rollout_scores is None or rollout_scores.numel() == 0:
+            # Fallback: use uniform scores if no attention history
             rollout_scores = torch.ones(B, N-1, device=x.device)
         
         # CRITICAL: Add numerical stability checks
         # Replace any NaN/Inf values with uniform scores to prevent crashes
         if torch.isnan(rollout_scores).any() or torch.isinf(rollout_scores).any():
             print("Warning: NaN/Inf detected in attention rollout, using uniform scores")
+            rollout_scores = torch.ones(B, N-1, device=x.device)
+        
+        # Ensure rollout_scores has the right shape
+        if rollout_scores.shape != (B, N-1):
+            print(f"Warning: rollout_scores shape mismatch: {rollout_scores.shape}, expected ({B}, {N-1})")
             rollout_scores = torch.ones(B, N-1, device=x.device)
         
         # Generate global K, V from full input

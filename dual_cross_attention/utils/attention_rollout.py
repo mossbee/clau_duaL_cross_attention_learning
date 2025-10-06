@@ -78,24 +78,13 @@ class AttentionRollout:
                 # Fuse attention heads using specified method
                 attention_heads_fused = self.fuse_attention_heads(attention)  # [B, seq_len, seq_len]
                 
-                # Drop the lowest attentions, but don't drop the class token
-                # Based on vit_rollout.py lines 22-27
-                # CRITICAL: The reference vit_rollout.py only processes BATCH 0 (line 27: flat[0, indices])
-                # This is for single-image visualization. For training, we need to handle full batches.
-                # However, the discard operation is mostly for visualization quality, not rollout accuracy.
-                # For training, we can skip it to avoid the nested loop overhead.
-                
-                # For now, skip the discard step during training (only needed for visualization)
-                # This matches the core rollout formula from the paper without the visualization optimization
-                pass  # Skip discard for efficiency in batch processing
-                
                 # Add identity matrix for residual connections (S̄ = 0.5*S + 0.5*I)
                 # This accounts for residual connections in transformer: out = attn(x) + x
                 I = torch.eye(seq_len, device=device).unsqueeze(0).expand(B, -1, -1)
                 attention_heads_fused = (attention_heads_fused + I) / 2
                 
                 # Re-normalize after adding identity
-                attention_heads_fused = attention_heads_fused / attention_heads_fused.sum(dim=-1, keepdim=True)
+                attention_heads_fused = attention_heads_fused / (attention_heads_fused.sum(dim=-1, keepdim=True) + 1e-8)
                 
                 # Recursively multiply: Ŝ_i = S̄_i ⊗ S̄_{i-1} ⊗ ... ⊗ S̄_1
                 result = torch.matmul(attention_heads_fused, result)

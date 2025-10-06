@@ -224,6 +224,11 @@ class DualCrossAttentionTrainer:
             self.scaler = None
             print("⚠ Mixed precision disabled - this will use more memory")
         
+        # Clear CUDA cache to free up memory
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"✓ CUDA memory cleared. Available: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB")
+        
         # Print memory optimization settings
         if hasattr(self.config, 'use_gradient_checkpointing') and self.config.use_gradient_checkpointing:
             print("✓ Gradient checkpointing enabled (trades compute for memory)")
@@ -565,6 +570,10 @@ class DualCrossAttentionTrainer:
                     'w3': f"{current_metrics.get('w3', 0):.1f}"
                 })
             
+            # Clear memory every 100 batches to prevent OOM
+            if batch_idx % 100 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             # Lightweight wandb logging - reduced frequency and minimal stats
             if batch_idx % (self.config.log_frequency * 5) == 0 and self.wandb_project:
                 import wandb
@@ -858,6 +867,15 @@ class DualCrossAttentionTrainer:
                 print(f"\n⚠️  WARNING: SA accuracy is very low ({train_metrics.get('sa_acc', 0):.2%})!")
             if epoch > 1 and train_metrics.get('sa_acc', 0) < 0.5 * getattr(self, 'prev_sa_acc', 1.0):
                 print(f"\n⚠️  WARNING: Accuracy dropped significantly from previous epoch!")
+            
+            # Check for GLCA issues
+            if train_metrics.get('glca_acc', 0) < 0.01:
+                print(f"\n⚠️  WARNING: GLCA accuracy is very low ({train_metrics.get('glca_acc', 0):.2%})!")
+            
+            # Check uncertainty weights for anomalies
+            w1, w2, w3 = train_metrics.get('w1', 0), train_metrics.get('w2', 0), train_metrics.get('w3', 0)
+            if abs(w1 - w2) < 0.01 and abs(w2 - w3) < 0.01:
+                print(f"\n⚠️  WARNING: Uncertainty weights are too similar (w1={w1:.3f}, w2={w2:.3f}, w3={w3:.3f})!")
             
             self.prev_sa_acc = train_metrics.get('sa_acc', 0)
             print(f"{'='*80}\n")

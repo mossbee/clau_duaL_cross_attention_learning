@@ -52,11 +52,10 @@ class UncertaintyWeightedLoss(nn.Module):
         self.log_vars = nn.Parameter(init_values)
         self.num_tasks = num_tasks
 
-        # Tighter bounds to prevent instability. Kendall et al. (2018) suggests reasonable
-        # bounds. With [-2, 2], effective weights range from [0.135, 7.389] which is sufficient.
-        # This prevents one task from dominating or being ignored completely.
-        self.min_log_var = -2.0
-        self.max_log_var = 2.0
+        # More reasonable bounds for better learning dynamics
+        # With [-1, 1], effective weights range from [0.368, 2.718] which is more stable
+        self.min_log_var = -1.0
+        self.max_log_var = 1.0
     
     def forward(self, losses: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float], Dict[str, float]]:
         """
@@ -419,6 +418,11 @@ class DualCrossAttentionLoss(nn.Module):
         # Combine loss and metrics dictionaries
         loss_dict = {**loss_dict_floats, **log_vars, **weights}
         loss_dict["total_loss"] = total_loss.item()
+        
+        # Add debugging information
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            print(f"Warning: NaN/Inf in total loss! Individual losses: {loss_dict_floats}")
+            print(f"Log vars: {log_vars}, Weights: {weights}")
         
         return total_loss, loss_dict, metrics_dict
     

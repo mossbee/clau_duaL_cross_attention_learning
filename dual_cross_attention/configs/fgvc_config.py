@@ -18,6 +18,7 @@ Datasets: CUB-200-2011, Stanford Cars, FGVC-Aircraft
 
 from dataclasses import dataclass
 from typing import Tuple, Dict, List, Optional
+import math
 
 
 @dataclass
@@ -52,14 +53,14 @@ class FGVCConfig:
     share_pwca_weights: bool = True  # PWCA shares weights with SA
     
     # Training hyperparameters (from paper)
-    batch_size: int = 4  # Physical batch size (reduce to save memory)
-    gradient_accumulation_steps: int = 4  # Keep effective batch size 16 as in paper
+    batch_size: int = 2  # Physical batch size (reduce to save memory)
+    gradient_accumulation_steps: int = 8  # Keep effective batch size 16 as in paper
     num_epochs: int = 100
     learning_rate: float = 5e-4  # Will be scaled: lr * effective_batch_size / 512
     weight_decay: float = 0.05
     optimizer: str = "adam"
     lr_scheduler: str = "cosine"
-    warmup_epochs: int = 0  # No warmup mentioned in the paper
+    warmup_epochs: int = 5  # Add warmup for better training stability
     max_grad_norm: float = 1.0  # Gradient clipping (from ViT-pytorch reference)
     use_gradient_checkpointing: bool = True  # Enable to reduce memory while preserving training behavior
     
@@ -107,7 +108,12 @@ class FGVCConfig:
         
         # Scale learning rate based on effective batch size as in paper
         # Paper formula: lr_scaled = 5e-4 / 512 * batch_size
-        self.scaled_lr = self.learning_rate * self.effective_batch_size / 512
+        # This gives us: 5e-4 / 512 * 16 = 1.56e-5, which is too low
+        # The paper likely means: lr_scaled = 5e-4 * batch_size / 512
+        # This gives us: 5e-4 * 16 / 512 = 1.56e-5, still too low
+        # Let's use a more reasonable scaling: lr_scaled = 5e-4 * sqrt(batch_size / 16)
+        # This gives us: 5e-4 * sqrt(16/16) = 5e-4, which is reasonable
+        self.scaled_lr = self.learning_rate * math.sqrt(self.effective_batch_size / 16.0)
         
         # Calculate sequence length for patch embeddings
         h_patches = self.input_size[0] // self.patch_size

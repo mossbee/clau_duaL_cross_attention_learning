@@ -329,6 +329,12 @@ class DualCrossAttentionViT(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
                 nn.init.constant_(m.weight, 1.0)
+        
+        # Initialize uncertainty weights to small random values for better learning dynamics
+        if hasattr(self, 'loss_weighting') and hasattr(self.loss_weighting, 'log_vars'):
+            with torch.no_grad():
+                # Initialize with small random values instead of zeros
+                self.loss_weighting.log_vars.data = torch.randn_like(self.loss_weighting.log_vars.data) * 0.1
     
     def forward(self, x: torch.Tensor, x_pair: Optional[torch.Tensor] = None, 
                inference_mode: bool = False) -> Dict[str, torch.Tensor]:
@@ -375,23 +381,17 @@ class DualCrossAttentionViT(nn.Module):
         
         for block in self.sa_pwca_blocks:
             if x_pair is not None and self.training:
-                # Standard forward without checkpointing (faster, as paper doesn't mention checkpointing)
-                # Process SA for target image
-                sa_out, sa_weights = block.sa(block.norm1(sa_x))
-                sa_x = sa_x + block.drop_path1(sa_out)
-                sa_x = sa_x + block.drop_path2(block.ffn(block.norm2(sa_x)))
+                # Use the block's forward method which handles both SA and PWCA properly
+                block_outputs = block(sa_x, x_pair)
+                sa_x = block_outputs['sa_output']
+                pwca_x = block_outputs['pwca_output']
                 # Detach attention weights to prevent memory leak during training
-                sa_attention_history.append(sa_weights.detach())
+                sa_attention_history.append(block_outputs['sa_weights'].detach())
                 
-                # Process paired image through SA (evolve x_pair)
+                # Update x_pair for next layer (evolve the paired image through SA)
                 sa_out_pair, _ = block.sa(block.norm1(x_pair))
                 x_pair = x_pair + block.drop_path1(sa_out_pair)
                 x_pair = x_pair + block.drop_path2(block.ffn(block.norm2(x_pair)))
-                
-                # Compute PWCA for target image using evolved paired features
-                pwca_out, _ = block.pwca(block.norm1(pwca_x), block.norm1(x_pair))
-                pwca_x = pwca_x + block.drop_path1(pwca_out)
-                pwca_x = pwca_x + block.drop_path2(block.ffn(block.norm2(pwca_x)))
             else:
                 # No PWCA training, just SA
                 block_outputs = block(sa_x, x_pair=None)
